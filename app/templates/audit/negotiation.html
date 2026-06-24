@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Negotiation · {{ app_name }}{% endblock %}
+{% block subtitle %}Agent Negotiation{% endblock %}
+
+{% block content %}
+<div class="page-head d-flex justify-content-between align-items-start flex-wrap gap-2">
+  <div>
+    <h1>Negotiation — {{ result.payee }}</h1>
+    <p class="text-muted mb-0">Hermes (buyer) vs. vendor agent (seller). Tier-1 agent-to-agent.</p>
+  </div>
+  <a href="{{ url_for('audit.index') }}" class="btn btn-outline-secondary btn-sm">← Back to audit</a>
+</div>
+
+<!-- Outcome -->
+<div class="row g-3 mb-4">
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card"><div class="kpi-label">Starting</div>
+      <div class="kpi-value">{{ result.current_amount | money }}</div></div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card"><div class="kpi-label">Agreed</div>
+      <div class="kpi-value">{{ result.agreed_amount | money }}</div></div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card"><div class="kpi-label">Saved</div>
+      <div class="kpi-value text-success">{{ result.savings | money }}</div>
+      <div class="kpi-foot">{{ result.savings_pct }}% over {{ result.rounds }} round(s)</div></div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card"><div class="kpi-label">Result</div>
+      <div class="kpi-value">
+        {% if result.agreed %}<span class="badge text-bg-success">agreed</span>
+        {% else %}<span class="badge text-bg-warning">no deal</span>{% endif %}
+      </div></div>
+  </div>
+</div>
+
+<!-- Transcript -->
+<div class="panel">
+  <div class="panel-head"><h2>Negotiation Transcript</h2></div>
+  <div class="panel-body">
+    {% for turn in result.transcript %}
+      {% if turn.speaker == 'system' %}
+        <div class="text-center text-muted small my-2">— {{ turn.message }} —</div>
+      {% else %}
+        <div class="hermes-msg {{ 'user' if turn.speaker == 'buyer' else 'assistant' }} mb-2"
+             style="white-space:pre-wrap; {{ 'margin-left:auto;' if turn.speaker == 'buyer' else '' }} max-width:80%;">
+          <strong>{{ 'Hermes (buyer)' if turn.speaker == 'buyer' else 'Vendor (seller)' }}:</strong>
+          {{ turn.message }}
+          {% if turn.offer %}<div class="small text-muted mt-1">offer: {{ turn.offer | money }}</div>{% endif %}
+        </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+</div>
+
+{% if result.agreed %}
+<div class="alert alert-success mt-3">
+  Hermes negotiated a {{ result.savings_pct }}% reduction with {{ result.payee }}.
+  Next step would be to route the new ${{ '%.0f' | format(result.agreed_amount) }} commit
+  through the guardrail for approval before switching the plan.
+</div>
+{% endif %}
+{% endblock %}

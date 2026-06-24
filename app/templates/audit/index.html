@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% block title %}Audit · {{ app_name }}{% endblock %}
+{% block subtitle %}Audit &amp; Ledger{% endblock %}
+
+{% block content %}
+<div class="page-head d-flex justify-content-between align-items-start flex-wrap gap-2">
+  <div>
+    <h1>Audit &amp; Ledger</h1>
+    <p class="text-muted mb-0">Transaction traceability, reconciliation and compliance replay.</p>
+  </div>
+  <form method="post" action="{{ url_for('audit.run') }}" class="d-flex align-items-center gap-2">
+    <select name="period_days" class="form-select form-select-sm" style="width:auto">
+      <option value="7">Last 7 days</option>
+      <option value="30" selected>Last 30 days</option>
+      <option value="90">Last 90 days</option>
+    </select>
+    <button type="submit" class="btn btn-primary btn-sm">
+      ⚖ Run Hermes Audit Council
+    </button>
+  </form>
+</div>
+
+{% if running_job %}
+<div id="council-status" class="alert alert-info d-flex align-items-center gap-2"
+     data-job="{{ running_job }}" data-status-url="{{ url_for('audit.status', job_id=running_job) }}">
+  <div class="spinner-border spinner-border-sm" role="status"></div>
+  <span id="council-status-text">Hermes audit council is deliberating… (real Nemotron calls, ~1–2 min)</span>
+</div>
+{% endif %}
+
+<!-- Audit summary -->
+<div class="row g-3 mb-4">
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card">
+      <div class="kpi-label">Total Spend</div>
+      <div class="kpi-value">{{ total_spend | money }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card">
+      <div class="kpi-label">Total Savings</div>
+      <div class="kpi-value text-success">{{ (report.total_savings if report else 0) | money }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card">
+      <div class="kpi-label">Reconciliation</div>
+      <div class="kpi-value">
+        {% if report %}
+          <span class="badge text-bg-{{ report.recon_badge }}">{{ report.reconciliation_status }}</span>
+        {% else %}<span class="text-muted">—</span>{% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card">
+      <div class="kpi-label">Compliance Replay</div>
+      <div class="kpi-value">
+        {% if report %}
+          <span class="badge text-bg-{{ report.replay_badge }}">{{ report.compliance_replay_result }}</span>
+        {% else %}<span class="text-muted">—</span>{% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-8">
+    <!-- Ledger -->
+    <div class="panel">
+      <div class="panel-head"><h2>Ledger Entries</h2></div>
+      <div class="panel-body p-0">
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Timestamp</th><th>Req</th><th>Action</th><th>Payee</th>
+                <th class="text-end">Amount</th><th>Policy</th><th>Outcome</th><th>Txn ID</th><th>By</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for e in entries %}
+              <tr>
+                <td class="small text-muted">{{ e.timestamp.strftime('%b %d %H:%M') if e.timestamp }}</td>
+                <td>{{ e.request_id or '—' }}</td>
+                <td>{{ e.action }}</td>
+                <td>{{ e.payee }}</td>
+                <td class="text-end">{{ e.amount | money }}</td>
+                <td>{% if e.policy_decision %}<span class="badge text-bg-light">{{ e.policy_decision }}</span>{% endif %}</td>
+                <td><span class="badge text-bg-{{ e.outcome_badge }}">{{ e.outcome }}</span></td>
+                <td class="small text-muted">{{ e.transaction_id }}</td>
+                <td class="small">{{ e.created_by }}</td>
+              </tr>
+              {% else %}
+              <tr><td colspan="9" class="text-center text-muted py-4">No ledger entries yet.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Exceptions -->
+  <div class="col-lg-4">
+    <div class="panel">
+      <div class="panel-head"><h2>Exception Summary</h2></div>
+      <div class="panel-body">
+        {% if exception_summary %}
+          {% for etype, count in exception_summary.items() %}
+          <div class="guardrail-row">
+            <span><span class="dot bg-danger"></span> {{ etype }}</span>
+            <strong>{{ count }}</strong>
+          </div>
+          {% endfor %}
+        {% else %}
+          <p class="text-muted small mb-0">No exceptions flagged. Ledger is clean.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="panel mt-3">
+      <div class="panel-head"><h2>Exceptions Detail</h2></div>
+      <div class="panel-body p-0">
+        <ul class="list-group list-group-flush">
+          {% for exc in (report.exceptions if report else []) %}
+          <li class="list-group-item">
+            <div class="d-flex justify-content-between">
+              <span class="badge text-bg-danger">{{ exc.exception_type }}</span>
+              <span class="small text-muted">{{ exc.amount | money }}</span>
+            </div>
+            <div class="small mt-1">{{ exc.description }}</div>
+            {% if exc.transaction_id %}<div class="small text-muted">{{ exc.transaction_id }}</div>{% endif %}
+          </li>
+          {% else %}
+          <li class="list-group-item text-center text-muted py-4">No exceptions.</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Advisory / per-vendor judgments -->
+{% if report and report.advisories %}
+<div class="panel mt-4">
+  <div class="panel-head">
+    <h2>Hermes Advisory — Vendor Judgments</h2>
+    <span class="text-muted small">Every vendor judged, not only exceptions</span>
+  </div>
+  <div class="panel-body p-0">
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead>
+          <tr>
+            <th>Vendor</th><th>Category</th><th class="text-end">Spend</th>
+            <th>Verdict</th><th>Action</th><th class="text-end">Potential Saving</th>
+            <th>Rationale</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in report.advisories %}
+          <tr>
+            <td><strong>{{ r.payee }}</strong></td>
+            <td class="small text-muted">{{ r.category }}</td>
+            <td class="text-end">{{ r.total | money }}</td>
+            <td><span class="badge text-bg-{{ r.verdict_badge }}">{{ r.verdict }}</span></td>
+            <td><span class="badge text-bg-{{ r.action_badge }}">{{ r.action }}</span></td>
+            <td class="text-end">{{ r.projected_savings | money if r.projected_savings else '—' }}</td>
+            <td class="small">{{ r.rationale }}</td>
+            <td class="text-end">
+              {% if r.negotiable %}
+              <form method="post" action="{{ url_for('audit.negotiate') }}" class="m-0">
+                <input type="hidden" name="payee" value="{{ r.payee }}">
+                <input type="hidden" name="amount" value="{{ r.total }}">
+                <button type="submit" class="btn btn-sm btn-primary">⇄ Negotiate</button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- Council deliberation transcript -->
+{% if report and report.notes %}
+<div class="panel mt-4">
+  <div class="panel-head d-flex justify-content-between align-items-center">
+    <h2>Hermes Audit Council — Deliberation</h2>
+    <span class="badge text-bg-secondary">{{ report.title }}</span>
+  </div>
+  <div class="panel-body">
+    <p class="text-muted small mb-2">
+      Reconciler · Compliance Officer · Period Analyst → Lead Auditor.
+      Each specialist calls the audit tools; the Lead synthesises and escalates.
+    </p>
+    <pre class="audit-transcript small mb-0" style="white-space:pre-wrap;background:#0d1117;color:#c9d1d9;padding:1rem;border-radius:.5rem;max-height:480px;overflow:auto;">{{ report.notes }}</pre>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    const el = document.getElementById("council-status");
+    if (!el) return;
+    const url = el.dataset.statusUrl;
+    const txt = document.getElementById("council-status-text");
+    const poll = setInterval(async () => {
+      try {
+        const r = await fetch(url);
+        const j = await r.json();
+        if (j.status === "done") {
+          clearInterval(poll);
+          txt.textContent = "Audit complete — loading report…";
+          window.location = "{{ url_for('audit.index') }}";
+        } else if (j.status === "error") {
+          clearInterval(poll);
+          el.className = "alert alert-danger";
+          txt.textContent = "Audit failed: " + (j.error || "unknown error");
+        }
+      } catch (e) { /* keep polling */ }
+    }, 3000);
+  })();
+</script>
+{% endblock %}

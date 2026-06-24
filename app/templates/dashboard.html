@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · {{ app_name }}{% endblock %}
+{% block subtitle %}Command Center{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Dashboard</h1>
+  <p class="text-muted">Executive summary of procurement, spend and guardrail activity.</p>
+</div>
+
+<!-- KPI cards -->
+<div class="row g-3 mb-4">
+  <div class="col-6 col-xl">
+    <div class="kpi-card">
+      <div class="kpi-label">Monthly Budget Used</div>
+      <div class="kpi-value">{{ kpis.monthly_used | money }}</div>
+      <div class="progress kpi-progress">
+        <div class="progress-bar" role="progressbar"
+             style="width: {{ kpis.monthly_used_pct }}%"></div>
+      </div>
+      <div class="kpi-foot">{{ kpis.monthly_used_pct }}% of {{ kpis.monthly_budget | money }}</div>
+    </div>
+  </div>
+  <div class="col-6 col-xl">
+    <div class="kpi-card">
+      <div class="kpi-label">Today's Spend</div>
+      <div class="kpi-value">{{ kpis.today_spend | money }}</div>
+      <div class="kpi-foot"><i class="bi bi-calendar-day"></i> Posted today</div>
+    </div>
+  </div>
+  <div class="col-6 col-xl">
+    <div class="kpi-card">
+      <div class="kpi-label">Savings This Month</div>
+      <div class="kpi-value text-success">{{ kpis.savings | money }}</div>
+      <div class="kpi-foot"><i class="bi bi-piggy-bank"></i> Identified by Hermes</div>
+    </div>
+  </div>
+  <div class="col-6 col-xl">
+    <div class="kpi-card">
+      <div class="kpi-label">Pending Approvals</div>
+      <div class="kpi-value text-warning">{{ kpis.pending_approvals }}</div>
+      <div class="kpi-foot"><a href="{{ url_for('approvals.queue') }}">Review queue →</a></div>
+    </div>
+  </div>
+  <div class="col-6 col-xl">
+    <div class="kpi-card">
+      <div class="kpi-label">Blocked Requests</div>
+      <div class="kpi-value text-danger">{{ kpis.blocked_requests }}</div>
+      <div class="kpi-foot"><i class="bi bi-shield-x"></i> Guardrail enforced</div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3">
+  <!-- Spend chart -->
+  <div class="col-lg-8">
+    <div class="panel">
+      <div class="panel-head"><h2>Spend — last 7 days</h2></div>
+      <div class="panel-body">
+        <canvas id="spendChart" height="110"></canvas>
+      </div>
+    </div>
+
+    <!-- Recent financial activity -->
+    <div class="panel mt-3">
+      <div class="panel-head">
+        <h2>Recent Financial Activity</h2>
+        <a href="{{ url_for('audit.index') }}" class="btn btn-sm btn-outline-secondary">Full ledger</a>
+      </div>
+      <div class="panel-body p-0">
+        <table class="table table-hover align-middle mb-0">
+          <thead>
+            <tr>
+              <th>Time</th><th>Action</th><th>Payee</th>
+              <th class="text-end">Amount</th><th>Outcome</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for e in recent_ledger %}
+            <tr>
+              <td class="text-muted small">{{ e.timestamp.strftime('%b %d %H:%M') if e.timestamp }}</td>
+              <td>{{ e.action }}</td>
+              <td>{{ e.payee }}</td>
+              <td class="text-end">{{ e.amount | money }}</td>
+              <td><span class="badge text-bg-{{ e.outcome_badge }}">{{ e.outcome }}</span></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="text-center text-muted py-4">No activity yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Side column -->
+  <div class="col-lg-4">
+    <!-- Guardrail summary -->
+    <div class="panel">
+      <div class="panel-head"><h2>Guardrail Status</h2></div>
+      <div class="panel-body">
+        <div class="guardrail-row">
+          <span><span class="dot bg-warning"></span> Needs approval</span>
+          <strong>{{ guardrail_summary.NEEDS_APPROVAL }}</strong>
+        </div>
+        <div class="guardrail-row">
+          <span><span class="dot bg-success"></span> Approved</span>
+          <strong>{{ guardrail_summary.APPROVED }}</strong>
+        </div>
+        <div class="guardrail-row">
+          <span><span class="dot bg-danger"></span> Rejected</span>
+          <strong>{{ guardrail_summary.REJECTED }}</strong>
+        </div>
+        <div class="guardrail-row">
+          <span><span class="dot bg-danger"></span> Blocked</span>
+          <strong>{{ guardrail_summary.BLOCKED }}</strong>
+        </div>
+      </div>
+    </div>
+
+    <!-- Audit health -->
+    <div class="panel mt-3">
+      <div class="panel-head">
+        <h2>Audit Health</h2>
+        <a href="{{ url_for('audit.index') }}" class="btn btn-sm btn-outline-secondary">Open audit</a>
+      </div>
+      <div class="panel-body">
+        <div class="guardrail-row">
+          <span><span class="dot bg-{{ 'success' if kpis.reconciliation_status == 'balanced' else 'danger' }}"></span> Reconciliation</span>
+          <span class="badge text-bg-{{ 'success' if kpis.reconciliation_status == 'balanced' else 'danger' }}">{{ kpis.reconciliation_status }}</span>
+        </div>
+        <div class="guardrail-row">
+          <span><span class="dot bg-{{ 'success' if kpis.compliance_result == 'pass' else 'danger' }}"></span> Compliance replay</span>
+          <span class="badge text-bg-{{ 'success' if kpis.compliance_result == 'pass' else 'danger' }}">{{ kpis.compliance_result }}</span>
+        </div>
+        <div class="guardrail-row">
+          <span><span class="dot bg-{{ 'success' if kpis.audit_exceptions == 0 else 'warning' }}"></span> Open exceptions</span>
+          <strong>{{ kpis.audit_exceptions }}</strong>
+        </div>
+        {% if report %}
+        <div class="kpi-foot mt-2">Last run: {{ report.generated_at.strftime('%b %d %H:%M') }}</div>
+        {% endif %}
+        <form method="post" action="{{ url_for('audit.run') }}" class="mt-2">
+          <input type="hidden" name="period_days" value="30">
+          <button type="submit" class="btn btn-primary btn-sm w-100">⚖ Run Hermes Audit Council</button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Urgent procurement -->
+    <div class="panel mt-3">
+      <div class="panel-head"><h2>Urgent Procurement</h2></div>
+      <div class="panel-body p-0">
+        <ul class="list-group list-group-flush">
+          {% for r in urgent %}
+          <li class="list-group-item d-flex justify-content-between align-items-start">
+            <div>
+              <a href="{{ url_for('procurement.detail', req_id=r.id) }}">{{ r.title }}</a>
+              <div class="small text-muted">
+                {% if r.deadline %}<i class="bi bi-clock"></i> due {{ r.deadline.strftime('%b %d') }}{% else %}No deadline{% endif %}
+              </div>
+            </div>
+            <span class="badge text-bg-{{ r.status_badge }}">{{ r.status }}</span>
+          </li>
+          {% else %}
+          <li class="list-group-item text-center text-muted py-4">Nothing urgent.</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const spendData = {{ spend_chart | tojson }};
+  const ctx = document.getElementById('spendChart');
+  if (ctx) {
+    new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: spendData.labels,
+        datasets: [{
+          label: 'Posted spend',
+          data: spendData.data,
+          backgroundColor: '#4f46e5',
+          borderRadius: 6,
+          maxBarThickness: 38
+        }]
+      },
+      options: {
+        plugins: { legend: { display: false } },
+        scales: {
+          y: { beginAtZero: true, ticks: { callback: v => '$' + v.toLocaleString() } }
+        }
+      }
+    });
+  }
+</script>
+{% endblock %}

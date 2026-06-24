@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Approvals · {{ app_name }}{% endblock %}
+{% block subtitle %}Guardrail Approval Queue{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Approval Queue</h1>
+  <p class="text-muted">Human-in-the-loop control. The agent cannot spend without sign-off.</p>
+</div>
+
+<!-- Needs approval -->
+<div class="panel">
+  <div class="panel-head"><h2><i class="bi bi-hourglass-split text-warning"></i> Needs Approval ({{ needs_approval | length }})</h2></div>
+  <div class="panel-body p-0">
+    <table class="table align-middle mb-0">
+      <thead>
+        <tr>
+          <th>Request</th><th>Payee / Vendor</th><th class="text-end">Amount</th>
+          <th>Policy</th><th>Rule</th><th>Agent reason</th><th class="text-end">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in needs_approval %}
+        <tr>
+          <td>{% if a.request %}<a href="{{ url_for('procurement.detail', req_id=a.request.id) }}">{{ a.request.title }}</a>{% else %}—{% endif %}</td>
+          <td>{{ a.payee }}</td>
+          <td class="text-end">{{ a.amount | money }}</td>
+          <td><span class="badge text-bg-{{ a.decision_badge }}">{{ a.policy_decision }}</span></td>
+          <td class="small text-muted">{{ a.policy_rule }}</td>
+          <td class="small">{{ a.agent_reason }}</td>
+          <td class="text-end text-nowrap">
+            <form method="post" action="{{ url_for('approvals.approve', approval_id=a.id) }}" class="d-inline">
+              <button class="btn btn-sm btn-success"><i class="bi bi-check-lg"></i> Approve</button>
+            </form>
+            <form method="post" action="{{ url_for('approvals.reject', approval_id=a.id) }}" class="d-inline">
+              <button class="btn btn-sm btn-outline-danger"><i class="bi bi-x-lg"></i> Reject</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="text-center text-muted py-4">Nothing awaiting approval.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Blocked -->
+<div class="panel mt-3">
+  <div class="panel-head"><h2><i class="bi bi-shield-x text-danger"></i> Blocked ({{ blocked | length }})</h2></div>
+  <div class="panel-body p-0">
+    <table class="table align-middle mb-0">
+      <thead>
+        <tr><th>Request</th><th>Payee / Vendor</th><th class="text-end">Amount</th><th>Rule</th><th>Reason</th></tr>
+      </thead>
+      <tbody>
+        {% for a in blocked %}
+        <tr class="table-danger-subtle">
+          <td>{% if a.request %}<a href="{{ url_for('procurement.detail', req_id=a.request.id) }}">{{ a.request.title }}</a>{% else %}—{% endif %}</td>
+          <td>{{ a.payee }}</td>
+          <td class="text-end">{{ a.amount | money }}</td>
+          <td class="small text-muted">{{ a.policy_rule }}</td>
+          <td class="small">{{ a.agent_reason }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="text-center text-muted py-4">No blocked requests.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Decided history -->
+<div class="panel mt-3">
+  <div class="panel-head"><h2>Recently Decided</h2></div>
+  <div class="panel-body p-0">
+    <table class="table align-middle mb-0">
+      <thead>
+        <tr><th>Request</th><th>Payee</th><th class="text-end">Amount</th><th>Status</th><th>Decided by</th><th>When</th></tr>
+      </thead>
+      <tbody>
+        {% for a in decided %}
+        <tr>
+          <td>{% if a.request %}<a href="{{ url_for('procurement.detail', req_id=a.request.id) }}">{{ a.request.title }}</a>{% else %}—{% endif %}</td>
+          <td>{{ a.payee }}</td>
+          <td class="text-end">{{ a.amount | money }}</td>
+          <td><span class="badge text-bg-{{ a.status_badge }}">{{ a.status }}</span></td>
+          <td>{{ a.decided_by or '—' }}</td>
+          <td class="small text-muted">{{ a.decided_at.strftime('%b %d %H:%M') if a.decided_at else '—' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="text-center text-muted py-4">No decisions yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

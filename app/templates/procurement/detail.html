@@ -1,0 +1,251 @@
+{% extends "base.html" %}
+{% block title %}{{ req.title }} · {{ app_name }}{% endblock %}
+{% block subtitle %}Request #{{ req.id }}{% endblock %}
+
+{% block content %}
+<div class="page-head d-flex justify-content-between align-items-start">
+  <div>
+    <a href="{{ url_for('procurement.list_requests') }}" class="text-muted small"><i class="bi bi-arrow-left"></i> Back to list</a>
+    <h1>{{ req.title }} <span class="badge text-bg-{{ req.status_badge }} align-middle">{{ req.status }}</span></h1>
+    <p class="text-muted mb-0">{{ req.category or 'Uncategorized' }} · Budget ceiling {{ req.budget_ceiling | money }}</p>
+  </div>
+  <div class="d-flex gap-2">
+    <a href="{{ url_for('procurement.edit', req_id=req.id) }}" class="btn btn-outline-secondary"><i class="bi bi-pencil"></i> Edit</a>
+    <form method="post" action="{{ url_for('procurement.delete', req_id=req.id) }}"
+          onsubmit="return confirm('Delete this request?');">
+      <button class="btn btn-outline-danger"><i class="bi bi-trash"></i> Delete</button>
+    </form>
+  </div>
+</div>
+
+<!-- Procurement pipeline stage bar -->
+{% set enriched = req.vendors | selectattr('score_quality') | list | length > 0 %}
+{% set negotiated = req.recommended_vendor and req.recommended_vendor.negotiation %}
+{% set stages = [
+  ('Intake', req.intake_raw or req.requirement_spec_json),
+  ('Discover', req.vendors | length > 0),
+  ('Enrich', enriched),
+  ('Evaluate', req.recommended_vendor_id),
+  ('Negotiate', negotiated),
+  ('Guardrail', req.approval),
+  ('Buy', req.status == 'purchased' or req.stripe_subscription_id),
+] %}
+<div class="d-flex flex-wrap align-items-center gap-1 mt-2 mb-1">
+  {% for name, done in stages %}
+    <span class="badge {{ 'text-bg-success' if done else 'text-bg-light text-muted border' }}">
+      {% if done %}<i class="bi bi-check-lg"></i>{% endif %} {{ loop.index }}. {{ name }}
+    </span>
+    {% if not loop.last %}<i class="bi bi-chevron-right text-muted small"></i>{% endif %}
+  {% endfor %}
+</div>
+
+<div class="row g-3 mt-1">
+  <div class="col-lg-8">
+    <!-- Details -->
+    <div class="panel">
+      <div class="panel-head"><h2>Request Details</h2></div>
+      <div class="panel-body">
+        <p>{{ req.description or 'No description provided.' }}</p>
+        <div class="row">
+          <div class="col-md-6"><dl class="meta">
+            <dt>Quantity / Usage</dt><dd>{{ req.quantity_or_usage or '—' }}</dd>
+            <dt>Deadline</dt><dd>{{ req.deadline.strftime('%b %d, %Y') if req.deadline else '—' }}</dd>
+          </dl></div>
+          <div class="col-md-6"><dl class="meta">
+            <dt>Must-haves</dt><dd>{{ req.must_haves or '—' }}</dd>
+            <dt>Nice-to-haves</dt><dd>{{ req.nice_to_haves or '—' }}</dd>
+          </dl></div>
+        </div>
+        <div class="priority-chips">
+          <span class="chip">Price {{ req.priority_price }}</span>
+          <span class="chip">Time {{ req.priority_time }}</span>
+          <span class="chip">Risk {{ req.priority_risk }}</span>
+          <span class="chip">Quality {{ req.priority_quality }}</span>
+          <span class="chip">Terms {{ req.priority_terms }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Vendor scorecard -->
+    <div class="panel mt-3">
+      <div class="panel-head">
+        <h2>Vendor Scorecard</h2>
+        <div class="d-flex gap-2">
+          <form method="post" action="{{ url_for('procurement.discover_vendors', req_id=req.id) }}" class="d-flex align-items-center gap-1"
+                data-loading
+                data-loading-title="Discovering vendors…"
+                data-loading-sub="Sourcing candidates from the curated catalogue and adding them to the scorecard."
+                data-loading-sub-hermes="Hermes is sourcing live vendor candidates… this can take 30–40s (single-threaded model). Please keep this tab open.">
+            <div class="form-check m-0">
+              <input class="form-check-input" type="checkbox" name="use_hermes" value="1" id="discUseHermes">
+              <label class="form-check-label small text-muted" for="discUseHermes">Hermes</label>
+            </div>
+            <button class="btn btn-sm btn-outline-secondary"><i class="bi bi-search"></i> 1 · Discover</button>
+          </form>
+          <form method="post" action="{{ url_for('procurement.enrich_vendors', req_id=req.id) }}"
+                data-loading
+                data-loading-title="Enriching candidates…"
+                data-loading-sub="Scoring price, time, risk, quality and terms; disqualifying any missing a must-have.">
+            <button class="btn btn-sm btn-outline-secondary {{ 'disabled' if not req.vendors }}"><i class="bi bi-sliders"></i> 2 · Enrich</button>
+          </form>
+          <form method="post" action="{{ url_for('procurement.recommend', req_id=req.id) }}" class="d-flex align-items-center gap-1"
+                data-loading
+                data-loading-title="Evaluating vendors…"
+                data-loading-sub="Scoring the scorecard and choosing the best-value vendor."
+                data-loading-sub-hermes="Hermes is writing the recommendation… this can take 30–40s (single-threaded model). Please keep this tab open.">
+            <div class="form-check m-0">
+              <input class="form-check-input" type="checkbox" name="use_hermes" value="1" id="recUseHermes">
+              <label class="form-check-label small text-muted" for="recUseHermes">Hermes</label>
+            </div>
+            <button class="btn btn-sm btn-outline-primary {{ 'disabled' if not req.vendors }}"><i class="bi bi-stars"></i> 3 · Recommend</button>
+          </form>
+        </div>
+      </div>
+      <div class="panel-body p-0">
+        <table class="table align-middle mb-0">
+          <thead>
+            <tr>
+              <th>Vendor</th><th class="text-end">Price</th><th>Lead</th>
+              <th>Price</th><th>Time</th><th>Risk</th><th>Quality</th><th>Terms</th>
+              <th class="text-end">Score</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for v in req.vendors %}
+            {% set over_budget = req.budget_ceiling and v.price and v.price > req.budget_ceiling %}
+            <tr class="{% if req.recommended_vendor_id == v.id %}table-success{% elif v.disqualified %}table-secondary text-muted{% endif %}">
+              <td>
+                <strong>{% if v.url %}<a href="{{ v.url }}" target="_blank" rel="noopener">{{ v.name }}</a>{% else %}{{ v.name }}{% endif %}</strong>
+                {% if req.recommended_vendor_id == v.id %}<span class="badge text-bg-success"><i class="bi bi-trophy"></i> Recommended</span>{% endif %}
+                {% if v.source and v.source != 'manual' %}<span class="badge text-bg-light text-muted border">{{ v.source }}</span>{% endif %}
+                {% if v.disqualified %}<span class="badge text-bg-danger" title="{{ v.disqualify_reason }}"><i class="bi bi-x-circle"></i> disqualified</span>{% endif %}
+                {% if v.price_basis %}<div class="small text-muted">{{ v.price_basis }}</div>{% endif %}
+                {% if v.disqualified and v.disqualify_reason %}<div class="small text-danger">{{ v.disqualify_reason }}</div>
+                {% elif v.notes %}<div class="small text-muted">{{ v.notes }}</div>{% endif %}
+              </td>
+              <td class="text-end">
+                <span class="{{ 'text-danger fw-semibold' if over_budget }}">{{ v.price | money }}</span>
+                {% if over_budget %}<i class="bi bi-exclamation-triangle-fill text-danger small" title="Over budget"></i>{% endif %}
+              </td>
+              <td>{{ v.lead_time_days }}d</td>
+              <td>{{ v.score_price }}</td>
+              <td>{{ v.score_time }}</td>
+              <td>{{ v.score_risk }}</td>
+              <td>{{ v.score_quality }}</td>
+              <td>{{ v.score_terms }}</td>
+              <td class="text-end">
+                {% set sc = v.total_score %}
+                <span class="badge text-bg-{{ 'success' if sc >= 80 else ('warning' if sc >= 60 else 'secondary') }}">{{ sc }}</span>
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="9" class="text-center text-muted py-4">
+              No vendor options yet — click <strong>1 · Discover</strong> above, or add one below.
+            </td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Negotiation transcript (W5) -->
+    {% set nego = req.recommended_vendor.negotiation if req.recommended_vendor else {} %}
+    {% if nego %}
+    <div class="panel mt-3">
+      <div class="panel-head">
+        <h2><i class="bi bi-arrow-left-right"></i> Negotiation — {{ req.recommended_vendor.name }}</h2>
+        {% if nego.agreed %}
+          <span class="badge text-bg-success">agreed {{ nego.agreed_amount | money }} · saved {{ nego.savings | money }} ({{ nego.savings_pct }}%)</span>
+        {% else %}
+          <span class="badge text-bg-warning">no deal</span>
+        {% endif %}
+      </div>
+      <div class="panel-body">
+        {% for turn in nego.transcript %}
+          {% if turn.speaker == 'system' %}
+            <div class="text-center text-muted small my-2">— {{ turn.message }} —</div>
+          {% else %}
+            <div class="hermes-msg {{ 'user' if turn.speaker == 'buyer' else 'assistant' }} mb-2"
+                 style="white-space:pre-wrap; {{ 'margin-left:auto;' if turn.speaker == 'buyer' else '' }} max-width:80%;">
+              <strong>{{ 'Hermes (buyer)' if turn.speaker == 'buyer' else 'Vendor (seller)' }}:</strong>
+              {{ turn.message }}
+              {% if turn.offer %}<div class="small text-muted mt-1">offer: {{ turn.offer | money }}</div>{% endif %}
+            </div>
+          {% endif %}
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Add vendor -->
+    <div class="panel mt-3">
+      <div class="panel-head"><h2>Add Vendor Option</h2></div>
+      <div class="panel-body">
+        <form method="post" action="{{ url_for('procurement.add_vendor', req_id=req.id) }}" class="row g-2 align-items-end">
+          <div class="col-md-4"><label class="form-label small">Name</label>
+            <input name="name" class="form-control form-control-sm" required></div>
+          <div class="col-md-4"><label class="form-label small">Price ($)</label>
+            <input type="number" step="0.01" name="price" class="form-control form-control-sm"></div>
+          <div class="col-md-4"><label class="form-label small">Lead time (days)</label>
+            <input type="number" name="lead_time_days" class="form-control form-control-sm"></div>
+          {% for f, lbl in [('score_price','Price'),('score_time','Time'),('score_risk','Risk'),('score_quality','Quality'),('score_terms','Terms')] %}
+          <div class="col"><label class="form-label small">{{ lbl }} (0-100)</label>
+            <input type="number" min="0" max="100" name="{{ f }}" class="form-control form-control-sm" value="0"></div>
+          {% endfor %}
+          <div class="col-12"><label class="form-label small">Notes</label>
+            <input name="notes" class="form-control form-control-sm"></div>
+          <div class="col-12"><button class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> Add Vendor</button></div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Side: recommendation + guardrail -->
+  <div class="col-lg-4">
+    <div class="panel">
+      <div class="panel-head"><h2><i class="bi bi-robot"></i> Agent Recommendation</h2></div>
+      <div class="panel-body">
+        {% if req.agent_recommendation %}
+          <p>{{ req.agent_recommendation | mdbold }}</p>
+        {% else %}
+          <p class="text-muted">No recommendation yet. Run <strong>3 · Recommend</strong> to score vendors.</p>
+        {% endif %}
+        {% if req.recommended_vendor %}
+        <form method="post" action="{{ url_for('procurement.negotiate_vendor', req_id=req.id) }}" class="mt-2"
+              data-loading
+              data-loading-title="Negotiating…"
+              data-loading-sub="Running the agent-vs-agent negotiation rounds with the vendor.">
+          <input type="hidden" name="vendor_id" value="{{ req.recommended_vendor.id }}">
+          <button class="btn btn-sm btn-outline-primary w-100">
+            <i class="bi bi-arrow-left-right"></i> 4 · Negotiate with {{ req.recommended_vendor.name }}
+          </button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="panel mt-3">
+      <div class="panel-head"><h2>Guardrail</h2></div>
+      <div class="panel-body">
+        {% if req.approval %}
+          <div class="mb-2">
+            Policy decision:
+            <span class="badge text-bg-{{ req.approval.decision_badge }}">{{ req.approval.policy_decision }}</span>
+          </div>
+          <div class="small text-muted mb-2">Rule: {{ req.approval.policy_rule }}</div>
+          <p class="small">{{ req.approval.agent_reason }}</p>
+          <a href="{{ url_for('approvals.queue') }}" class="btn btn-sm btn-outline-secondary">View in queue</a>
+        {% else %}
+          <p class="text-muted small">This request has not been sent to the guardrail yet.</p>
+        {% endif %}
+        <form method="post" action="{{ url_for('procurement.to_guardrail', req_id=req.id) }}" class="mt-2"
+              data-loading
+              data-loading-title="Running the guardrail…"
+              data-loading-sub="Checking the spend against policy (caps, blocklist, approval threshold).">
+          <button class="btn btn-warning w-100 {{ 'disabled' if not req.vendors }}"><i class="bi bi-shield-check"></i> 5 · Send to Guardrail</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

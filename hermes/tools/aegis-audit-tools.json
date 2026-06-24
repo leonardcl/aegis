@@ -1,0 +1,64 @@
+{
+  "$comment": "Tool manifest for the Hermes Agent sandbox. Each tool is an HTTP-backed function whose schema matches app/services/hermes_tools.TOOL_SPECS. Point base_url at the Aegis CFO app reachable from inside the sandbox (host gateway IP or tunnel). If HERMES_TOOL_TOKEN is set in Aegis CFO, send it as a bearer token.",
+  "base_url": "http://host.docker.internal:5000/hermes",
+  "auth": {
+    "type": "bearer",
+    "token_env": "AEGIS_TOOL_TOKEN"
+  },
+  "tools": [
+    {
+      "name": "gather_period",
+      "description": "GATHER: ledger entries + Stripe charges + active policy for the period.",
+      "http": {"method": "POST", "path": "/tools/gather_period"},
+      "parameters": {
+        "type": "object",
+        "properties": {"period_days": {"type": "integer", "default": 30}}
+      }
+    },
+    {
+      "name": "reconcile_ledger",
+      "description": "RECONCILE: match ledger vs Stripe; returns matched, stripe_only, ledger_only, amount_mismatch.",
+      "http": {"method": "POST", "path": "/tools/reconcile_ledger"},
+      "parameters": {
+        "type": "object",
+        "properties": {"period_days": {"type": "integer", "default": 30}}
+      }
+    },
+    {
+      "name": "compliance_replay",
+      "description": "COMPLIANCE REPLAY: re-evaluate each posted spend vs the policy in force; pass/fail + breaches.",
+      "http": {"method": "POST", "path": "/tools/compliance_replay"},
+      "parameters": {
+        "type": "object",
+        "properties": {"period_days": {"type": "integer", "default": 30}}
+      }
+    },
+    {
+      "name": "period_review",
+      "description": "PERIOD REVIEW: spikes, repeat vendors, trends over the window.",
+      "http": {"method": "POST", "path": "/tools/period_review"},
+      "parameters": {
+        "type": "object",
+        "properties": {"period_days": {"type": "integer", "default": 30}}
+      }
+    },
+    {
+      "name": "categorize_spend",
+      "description": "CATEGORIZE: spend by category and vendor with totals.",
+      "http": {"method": "POST", "path": "/tools/categorize_spend"},
+      "parameters": {
+        "type": "object",
+        "properties": {"period_days": {"type": "integer", "default": 30}}
+      }
+    },
+    {
+      "name": "full_audit",
+      "description": "Run the whole flow and return the consolidated payload + escalations.",
+      "http": {"method": "POST", "path": "/tools/full_audit"},
+      "parameters": {
+        "type": "object",
+        "properties": {"period_days": {"type": "integer", "default": 30}}
+      }
+    }
+  ]
+}

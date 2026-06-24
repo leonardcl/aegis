@@ -1,0 +1,130 @@
+"""Agent guardrails for Hermes — constrain *actions*, never *cognition*.
+
+Design principle (this is the whole point):
+
+    Guardrails sit between the agent's THINKING and the agent's EFFECTS.
+    They restrict what the agent can *do* to the outside world (move money,
+    call irreversible APIs, pay un-allowlisted payees, exceed caps). They do
+    NOT restrict what the agent can *think*, *remember*, *learn*, or how it
+    *reasons*. Self-improvement is a feature, not a threat — a smarter agent
+    inside a sound action-boundary is exactly what we want.
+
+So:
+  * COGNITION — reasoning, planning, reflection, memory read/write, skill
+    authoring, learning loops → **unrestricted**.
+  * ACTIONS that move money or have external side-effects → **must pass the
+    deterministic guardrail** (NemoClaw-style policy: action type, payee
+    allowlist, per-txn cap, daily/monthly budget, human-approval threshold) and,
+    above the threshold, human approval. The agent cannot self-approve.
+  * SELF-MODIFICATION that would change the action-boundary itself (editing the
+    policy file, raising its own caps) → **denied / human-only**. The agent may
+    *propose* policy changes; it may not *apply* them.
+
+This module provides:
+  * ``SYSTEM_PROMPT`` — the operating envelope handed to Hermes on every chat.
+  * ``classify_intent`` / ``screen_reply`` — a light output check so a reply can
+    never *claim* it autonomously moved money; spend intents are redirected to
+    the approval queue.
+  * ``check_action`` — programmatic gate for any structured spend the agent
+    proposes (delegates to the existing ``guardrail_service`` policy engine).
+"""
+import re
+
+# --------------------------------------------------------------------------- #
+# The operating envelope (handed to Hermes as the system prompt)
+# --------------------------------------------------------------------------- #
+SYSTEM_PROMPT = (
+    "You are the Hermes Agent embedded in the Aegis CFO back office. You manage "
+    "and audit autonomous spend for the company.\n\n"
+    "YOUR FREEDOMS (no restriction): you may reason and think as deeply as you "
+    "want, plan, reflect, remember across sessions, write to your own memory, "
+    "author or refine skills, and improve yourself over time. Thinking and "
+    "learning are encouraged.\n\n"
+    "YOUR ACTION BOUNDARY (always enforced): you cannot move money or take "
+    "irreversible external actions on your own. Every spend must pass the "
+    "deterministic guardrail (allowed action type, payee on the allowlist, "
+    "amount under the per-transaction cap, within the daily/monthly budget). "
+    "Any spend above the human-approval threshold goes to the human approval "
+    "queue — you may recommend, you may not self-approve. You may NOT edit the "
+    "policy file or raise your own limits; you may only *propose* policy changes "
+    "for a human to apply.\n\n"
+    "When a user asks you to spend, buy, pay, cancel, or top-up: explain what "
+    "you would do, then route it to the guardrail / approval queue rather than "
+    "claiming you executed it. Be concise and helpful."
+)
+
+# --------------------------------------------------------------------------- #
+# Intent classification on the agent's own reply (defense in depth)
+# --------------------------------------------------------------------------- #
+# Phrases that would imply the agent autonomously executed a money action.
+_EXECUTED_SPEND = re.compile(
+    r"\b(i (?:have |just |already )?(?:paid|purchased|bought|transferred|sent|"
+    r"charged|wired|approved the payment|moved the funds|executed the payment))"
+    r"\b", re.IGNORECASE)
+
+# Phrases implying it changed its own guardrail / limits.
+_SELF_RAISE = re.compile(
+    r"\b(i (?:have |just )?(?:raised|increased|removed|disabled|changed|edited) "
+    r"(?:the |my )?(?:cap|limit|budget|policy|guardrail|allowlist))\b",
+    re.IGNORECASE)
+
+
+def classify_intent(text):
+    """Return a coarse intent label for a user message or agent reply."""
+    t = (text or "").lower()
+    if any(k in t for k in ("audit", "reconcile", "compliance replay")):
+        return "audit"
+    if any(k in t for k in ("pay", "buy", "purchase", "spend", "transfer",
+                            "top up", "topup", "cancel subscription")):
+        return "spend"
+    return "chat"
+
+
+def screen_reply(user_message, reply):
+    """Append a guardrail clarification if the reply over-claims autonomy.
+
+    This never blocks the agent's reasoning — it only ensures the *narrative*
+    stays truthful about the action boundary (the agent cannot move money or
+    change its own limits without the guardrail + a human).
+    """
+    note = ""
+    if _EXECUTED_SPEND.search(reply or ""):
+        note = ("\n\n— Guardrail: I can't move money on my own. I've routed this "
+                "to the guardrail; anything above the approval threshold needs a "
+                "human sign-off in the approval queue.")
+    elif _SELF_RAISE.search(reply or ""):
+        note = ("\n\n— Guardrail: I can't change my own caps or policy. I can "
+                "only propose a change for a human to apply.")
+    return (reply or "") + note
+
+
+# --------------------------------------------------------------------------- #
+# Programmatic gate for structured spend proposals
+# --------------------------------------------------------------------------- #
+def check_action(action, amount, payee="", category=""):
+    """Gate a structured action the agent proposes.
+
+    COGNITION-class actions (think/remember/learn/plan/analyze/audit) are always
+    allowed. MONEY-class actions are delegated to the deterministic policy engine
+    (guardrail_service). SELF-MODIFICATION of the boundary is denied.
+
+    Returns a dict: {decision: ALLOW|NEEDS_APPROVAL|BLOCK, rule, reason}.
+    """
+    cognition = {"think", "plan", "reflect", "remember", "recall", "learn",
+                 "analyze", "audit", "reconcile", "recommend", "categorize",
+                 "write_memory", "author_skill"}
+    boundary = {"edit_policy", "raise_cap", "change_budget", "disable_guardrail",
+                "modify_allowlist"}
+
+    a = (action or "").lower()
+    if a in cognition:
+        return {"decision": "ALLOW", "rule": "cognition_unrestricted",
+                "reason": "Reasoning/memory/learning actions are unrestricted."}
+    if a in boundary:
+        return {"decision": "BLOCK", "rule": "self_modification_denied",
+                "reason": "The agent may propose, not apply, changes to its own "
+                          "action boundary. Human-only."}
+    # Money-class → deterministic policy engine.
+    from . import guardrail_service
+    return guardrail_service.evaluate_policy(amount or 0.0, payee=payee,
+                                             category=category)

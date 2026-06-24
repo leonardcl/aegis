@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Procurement · {{ app_name }}{% endblock %}
+{% block subtitle %}Procurement Requests{% endblock %}
+
+{% block content %}
+<div class="page-head d-flex justify-content-between align-items-center">
+  <div>
+    <h1>Procurement Requests</h1>
+    <p class="text-muted mb-0">Manage requests, vendor scorecards and agent recommendations.</p>
+  </div>
+  <a href="{{ url_for('procurement.create') }}" class="btn btn-primary">
+    <i class="bi bi-plus-lg"></i> New Request
+  </a>
+</div>
+
+<!-- W1 INTAKE: natural-language need -> requirement spec -->
+<div class="panel mt-3">
+  <div class="panel-head"><h2><i class="bi bi-magic"></i> Describe a need</h2></div>
+  <div class="panel-body">
+    <form method="post" action="{{ url_for('procurement.intake_need') }}" class="row g-2 align-items-end"
+          data-loading
+          data-loading-title="Parsing your need…"
+          data-loading-sub="Building a requirement spec — budget, deadline, must-haves and priority weights."
+          data-loading-sub-hermes="Hermes is reading your request… this can take 30–40s (single-threaded model). Please keep this tab open.">
+      <div class="col-lg-9">
+        <label class="form-label small">Tell Hermes what you want to buy</label>
+        <input name="need" class="form-control"
+               placeholder="e.g. I need a transcription API under $300/mo with English and Indonesian and speaker diarization, live in 2 weeks"
+               required>
+      </div>
+      <div class="col-lg-3 d-flex gap-2">
+        <div class="form-check align-self-center">
+          <input class="form-check-input" type="checkbox" name="use_hermes" value="1" id="useHermes">
+          <label class="form-check-label small" for="useHermes">Use Hermes</label>
+        </div>
+        <button class="btn btn-primary flex-grow-1"><i class="bi bi-stars"></i> Parse need</button>
+      </div>
+    </form>
+    <p class="text-muted small mb-0 mt-2">
+      Parses budget, quantity, deadline, must-haves and priority weights into a
+      requirement spec. Leave “Use Hermes” off for the instant deterministic parse.
+    </p>
+  </div>
+</div>
+
+<div class="panel mt-3">
+  <div class="panel-body p-0">
+    <table class="table table-hover align-middle mb-0">
+      <thead>
+        <tr>
+          <th>#</th><th>Title</th><th>Category</th>
+          <th class="text-end">Budget</th><th>Deadline</th>
+          <th>Vendors</th><th>Status</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in requests %}
+        <tr>
+          <td class="text-muted">{{ r.id }}</td>
+          <td><a href="{{ url_for('procurement.detail', req_id=r.id) }}"><strong>{{ r.title }}</strong></a></td>
+          <td>{{ r.category or '—' }}</td>
+          <td class="text-end">{{ r.budget_ceiling | money }}</td>
+          <td>{{ r.deadline.strftime('%b %d, %Y') if r.deadline else '—' }}</td>
+          <td>{{ r.vendors | length }}</td>
+          <td><span class="badge text-bg-{{ r.status_badge }}">{{ r.status }}</span></td>
+          <td class="text-end">
+            <a href="{{ url_for('procurement.detail', req_id=r.id) }}" class="btn btn-sm btn-outline-secondary">View</a>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" class="text-center text-muted py-5">
+          No procurement requests yet. <a href="{{ url_for('procurement.create') }}">Create one</a>.
+        </td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

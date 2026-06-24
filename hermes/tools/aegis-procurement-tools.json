@@ -1,0 +1,107 @@
+{
+  "$comment": "Tool manifest for the Hermes Agent sandbox to drive the Aegis CFO on-demand procurement flow over HTTP. Endpoints are served by app/routes/hermes_api.py. The flow is stateful: call procurement_intake first to get a request_id, then pass it to the later tools. Point base_url at the Aegis CFO app reachable from inside the sandbox (host gateway IP or tunnel). If HERMES_TOOL_TOKEN is set in Aegis CFO, send it as a bearer token via AEGIS_TOOL_TOKEN.",
+  "base_url": "http://host.docker.internal:5000/hermes",
+  "auth": {
+    "type": "bearer",
+    "token_env": "AEGIS_TOOL_TOKEN"
+  },
+  "tools": [
+    {
+      "name": "procurement_intake",
+      "description": "INTAKE: parse a natural-language need ('I want to buy A') into a requirement spec and create a procurement request. Returns request_id + requirement_spec. Call this first.",
+      "http": {"method": "POST", "path": "/procurement/intake"},
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "need": {"type": "string", "description": "The need in plain English."},
+          "use_hermes": {"type": "boolean", "default": false}
+        },
+        "required": ["need"]
+      }
+    },
+    {
+      "name": "procurement_discover",
+      "description": "DISCOVER: find candidate vendors/products for the request (digital services or physical goods, per the need and its category) and add them to the scorecard. mode 'seed' (curated, default) or 'live'.",
+      "http": {"method": "POST", "path": "/procurement/discover"},
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "request_id": {"type": "integer"},
+          "mode": {"type": "string", "enum": ["seed", "live"], "default": "seed"}
+        },
+        "required": ["request_id"]
+      }
+    },
+    {
+      "name": "procurement_enrich",
+      "description": "ENRICH: compute 0-100 scores (price/time/risk/quality/terms) for each candidate and disqualify any missing a must-have. Returns the scored vendors + a summary.",
+      "http": {"method": "POST", "path": "/procurement/enrich"},
+      "parameters": {
+        "type": "object",
+        "properties": {"request_id": {"type": "integer"}},
+        "required": ["request_id"]
+      }
+    },
+    {
+      "name": "procurement_recommend",
+      "description": "EVALUATE: rank the qualified candidates and write a comparative recommendation. Returns the recommended vendor + narrative.",
+      "http": {"method": "POST", "path": "/procurement/recommend"},
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "request_id": {"type": "integer"},
+          "use_hermes": {"type": "boolean", "default": false}
+        },
+        "required": ["request_id"]
+      }
+    },
+    {
+      "name": "procurement_negotiate",
+      "description": "NEGOTIATE (optional): run agent-vs-agent negotiation against the recommended (or chosen) vendor. Returns the agreed price, savings and transcript.",
+      "http": {"method": "POST", "path": "/procurement/negotiate"},
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "request_id": {"type": "integer"},
+          "vendor_id": {"type": "integer", "description": "Optional; defaults to the recommended vendor."}
+        },
+        "required": ["request_id"]
+      }
+    },
+    {
+      "name": "procurement_guardrail",
+      "description": "GUARDRAIL: send the chosen purchase (negotiated amount if any) through the deterministic spend gate. Returns ALLOW / NEEDS_APPROVAL / BLOCK. The agent cannot self-approve; over-threshold spend routes to the human queue.",
+      "http": {"method": "POST", "path": "/procurement/guardrail"},
+      "parameters": {
+        "type": "object",
+        "properties": {"request_id": {"type": "integer"}},
+        "required": ["request_id"]
+      }
+    },
+    {
+      "name": "procurement_get",
+      "description": "Fetch the full current state of a procurement request (spec, vendors, scores, recommendation, negotiation, approval).",
+      "http": {"method": "GET", "path": "/procurement/requests/{request_id}"},
+      "parameters": {
+        "type": "object",
+        "properties": {"request_id": {"type": "integer"}},
+        "required": ["request_id"]
+      }
+    },
+    {
+      "name": "procurement_run",
+      "description": "Run the whole pipeline in one call: intake -> discover -> enrich -> recommend -> negotiate -> guardrail. Returns the consolidated request state. Use to confirm your step-by-step synthesis matches the engine.",
+      "http": {"method": "POST", "path": "/procurement/run"},
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "need": {"type": "string"},
+          "mode": {"type": "string", "enum": ["seed", "live"], "default": "seed"},
+          "negotiate": {"type": "boolean", "default": true},
+          "use_hermes": {"type": "boolean", "default": false}
+        },
+        "required": ["need"]
+      }
+    }
+  ]
+}

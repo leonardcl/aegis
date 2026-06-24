@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if req else 'New' }} Request · {{ app_name }}{% endblock %}
+{% block subtitle %}{{ 'Edit Request' if req else 'New Request' }}{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <a href="{{ url_for('procurement.list_requests') }}" class="text-muted small"><i class="bi bi-arrow-left"></i> Back to list</a>
+  <h1>{{ 'Edit Procurement Request' if req else 'New Procurement Request' }}</h1>
+</div>
+
+<form method="post"
+      action="{{ url_for('procurement.edit', req_id=req.id) if req else url_for('procurement.create') }}">
+  <div class="row g-3">
+    <div class="col-lg-8">
+      <div class="panel">
+        <div class="panel-head"><h2>Details</h2></div>
+        <div class="panel-body">
+          <div class="mb-3">
+            <label class="form-label">Title *</label>
+            <input name="title" class="form-control" required value="{{ req.title if req else '' }}">
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Description</label>
+            <textarea name="description" class="form-control" rows="3">{{ req.description if req else '' }}</textarea>
+          </div>
+          <div class="row">
+            <div class="col-md-6 mb-3">
+              <label class="form-label">Category</label>
+              <input name="category" class="form-control" value="{{ req.category if req else '' }}">
+            </div>
+            <div class="col-md-6 mb-3">
+              <label class="form-label">Quantity / Usage</label>
+              <input name="quantity_or_usage" class="form-control" value="{{ req.quantity_or_usage if req else '' }}">
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-md-4 mb-3">
+              <label class="form-label">Deadline</label>
+              <input type="date" name="deadline" class="form-control"
+                     value="{{ req.deadline.isoformat() if req and req.deadline else '' }}">
+            </div>
+            <div class="col-md-4 mb-3">
+              <label class="form-label">Budget Ceiling ($)</label>
+              <input type="number" step="0.01" name="budget_ceiling" class="form-control"
+                     value="{{ req.budget_ceiling if req else '' }}">
+            </div>
+            <div class="col-md-4 mb-3">
+              <label class="form-label">Status</label>
+              <select name="status" class="form-select">
+                {% for s in status_options %}
+                <option value="{{ s }}" {{ 'selected' if req and req.status == s }}>{{ s }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-md-6 mb-3">
+              <label class="form-label">Must-haves</label>
+              <textarea name="must_haves" class="form-control" rows="2">{{ req.must_haves if req else '' }}</textarea>
+            </div>
+            <div class="col-md-6 mb-3">
+              <label class="form-label">Nice-to-haves</label>
+              <textarea name="nice_to_haves" class="form-control" rows="2">{{ req.nice_to_haves if req else '' }}</textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-4">
+      <div class="panel">
+        <div class="panel-head"><h2>Decision Priorities</h2></div>
+        <div class="panel-body">
+          <p class="small text-muted">Weight each factor from 0 (ignore) to 5 (critical). Hermes uses these to score vendors.</p>
+          {% set fields = [('priority_price','Price'),('priority_time','Lead time'),('priority_risk','Risk'),('priority_quality','Quality'),('priority_terms','Terms')] %}
+          {% for name, label in fields %}
+          <div class="mb-3">
+            <label class="form-label d-flex justify-content-between">
+              <span>{{ label }}</span>
+              <span class="badge text-bg-light" id="val-{{ name }}">{{ req[name] if req else 3 }}</span>
+            </label>
+            <input type="range" min="0" max="5" class="form-range priority-range" name="{{ name }}"
+                   data-target="val-{{ name }}" value="{{ req[name] if req else 3 }}">
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="d-flex gap-2 mt-3">
+    <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save</button>
+    <a href="{{ url_for('procurement.list_requests') }}" class="btn btn-outline-secondary">Cancel</a>
+  </div>
+</form>
+{% endblock %}
