@@ -40,7 +40,15 @@ def ask_hermes_agent(message, context=None):
             f"Open the Audit page to watch it complete and see the full report."),
             "engine": "hermes" if hermes_client.is_live() else "local"}
 
+    # Identity / capability questions get a deterministic, on-brand answer so the
+    # opening demo beat is reliable and the agent never leaks its platform/model.
+    identity = _identity_reply(message)
+    if identity:
+        return {"reply": identity,
+                "engine": "hermes" if hermes_client.is_live() else "local"}
+
     if hermes_client.is_live():
+        from flask import current_app
         page = context.get("page", "")
         messages = [
             {"role": "system", "content": agent_guardrail.SYSTEM_PROMPT
@@ -49,13 +57,39 @@ def ask_hermes_agent(message, context=None):
         ]
         # Plain conversation (no audit tools) — fast. Explicit audit commands are
         # handled above by the council. Reasoning/memory/etc. are unrestricted;
-        # only *actions* are guardrailed (see agent_guardrail).
-        out = hermes_client.chat(messages, use_tools=False, label="chat")
+        # only *actions* are guardrailed (see agent_guardrail). Uses the shorter
+        # chat timeout so the panel fails fast if the model is busy.
+        chat_timeout = current_app.config.get("HERMES_CHAT_TIMEOUT", 30)
+        out = hermes_client.chat(messages, use_tools=False, label="chat",
+                                 timeout=chat_timeout)
         reply = out.get("content") or _keyword_reply(message)
         reply = agent_guardrail.screen_reply(message, reply)
         return {"reply": reply, "engine": out.get("engine", "hermes")}
 
     return {"reply": _keyword_reply(message), "engine": "local"}
+
+
+_IDENTITY_Q = re.compile(
+    r"\b(who\s+are\s+you|what\s+are\s+you|what\s+can\s+you\s+do|"
+    r"what\s+do\s+you\s+do|introduce\s+yourself|your\s+name|are\s+you\s+(?:an?\s+)?"
+    r"(?:ai|bot|model|llm)|what\s+model|which\s+model|how\s+were\s+you\s+(?:made|built|trained))\b",
+    re.IGNORECASE)
+
+_IDENTITY_REPLY = (
+    "I'm Aegis — the autonomous CFO agent for this back office. I monitor spend "
+    "against your budget, run procurement (discover vendors, score them on value, "
+    "negotiate), keep an append-only ledger, and audit the books — reconciling "
+    "against Stripe and replaying every spend against the policy in force. "
+    "Crucially, I can't move money on my own: every spend passes a deterministic "
+    "guardrail, and anything over the approval threshold goes to a human in the "
+    "approval queue. Ask me about your budget, a procurement request, the pending "
+    "approvals, or say \"run an audit\" and I'll convene the audit council."
+)
+
+
+def _identity_reply(message):
+    """Return the canned identity/capability answer, or None if not such a question."""
+    return _IDENTITY_REPLY if _IDENTITY_Q.search(message or "") else None
 
 
 def _keyword_reply(message):

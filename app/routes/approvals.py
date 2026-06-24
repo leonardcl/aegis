@@ -39,6 +39,9 @@ def queue():
 @bp.route("/<int:approval_id>/approve", methods=["POST"])
 def approve(approval_id):
     approval = ApprovalRequest.query.get_or_404(approval_id)
+    if approval.status != "NEEDS_APPROVAL":
+        flash(f"No action taken — this item is already {approval.status}.", "info")
+        return redirect(url_for("approvals.queue"))
     decide_approval(approval, "approve")
     flash("Request approved and posted to the ledger.", "success")
     return redirect(url_for("approvals.queue"))
@@ -47,6 +50,9 @@ def approve(approval_id):
 @bp.route("/<int:approval_id>/reject", methods=["POST"])
 def reject(approval_id):
     approval = ApprovalRequest.query.get_or_404(approval_id)
+    if approval.status != "NEEDS_APPROVAL":
+        flash(f"No action taken — this item is already {approval.status}.", "info")
+        return redirect(url_for("approvals.queue"))
     decide_approval(approval, "reject")
     flash("Request rejected.", "warning")
     return redirect(url_for("approvals.queue"))

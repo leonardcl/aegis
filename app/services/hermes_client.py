@@ -104,7 +104,7 @@ def narrate(persona, calls):
 # --------------------------------------------------------------------------- #
 # Public: a single chat turn with automatic tool-calling loop
 # --------------------------------------------------------------------------- #
-def chat(messages, tools=None, use_tools=True, label="hermes"):
+def chat(messages, tools=None, use_tools=True, label="hermes", timeout=None):
     """Run one conversation to completion, resolving tool calls along the way.
 
     Args:
@@ -112,6 +112,7 @@ def chat(messages, tools=None, use_tools=True, label="hermes"):
         tools: tool specs to expose; defaults to the full audit tool set.
         use_tools: if False, no tools are offered (plain chat).
         label: persona label, recorded in the returned trace.
+        timeout: per-call timeout (seconds); defaults to HERMES_TIMEOUT.
 
     Returns:
         dict: ``{"content": str, "trace": [...], "engine": "hermes"|"local",
@@ -119,7 +120,7 @@ def chat(messages, tools=None, use_tools=True, label="hermes"):
     """
     tools = tools if tools is not None else (hermes_tools.TOOL_SPECS if use_tools else None)
     model = _cfg("HERMES_MODEL") or DEFAULT_MODEL
-    timeout = int(_cfg("HERMES_TIMEOUT", 60) or 60)
+    timeout = int(timeout or _cfg("HERMES_TIMEOUT", 60) or 60)
 
     if is_live():
         try:

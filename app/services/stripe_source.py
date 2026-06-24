@@ -53,7 +53,38 @@ def get_charges(period_days=30):
          "created_at": now - timedelta(days=2), "status": "succeeded"},
     ]
     cutoff = now - timedelta(days=period_days)
-    return [c for c in charges if c["created_at"] >= cutoff]
+    seeded = [c for c in charges if c["created_at"] >= cutoff]
+    return seeded + _aegis_confirmed_charges(cutoff)
+
+
+def _aegis_confirmed_charges(cutoff):
+    """Confirmed Stripe twins for spends Aegis authorised through its guardrail.
+
+    In production these are the matching objects in the real Stripe (test-mode)
+    account. Here we derive them from the posted ledger so that an
+    approve-then-audit flow reconciles cleanly instead of fabricating a
+    ledger-only discrepancy. Only entries written by ``decide_approval`` (the
+    ``ch_aegis_`` transaction-id prefix) are mirrored — the deliberately seeded
+    rogue / mismatch / unconfirmed charges are untouched, so the demo exceptions
+    still fire exactly as before. Restart-safe (no process state).
+    """
+    try:
+        from ..models import LedgerEntry
+        rows = (
+            LedgerEntry.query.filter(
+                LedgerEntry.outcome == "posted",
+                LedgerEntry.transaction_id.like("ch_aegis_%"),
+                LedgerEntry.timestamp >= cutoff,
+            ).all()
+        )
+    except Exception:  # outside an app/db context (e.g. unit import) — no twins.
+        return []
+    return [
+        {"transaction_id": r.transaction_id, "payee": r.payee,
+         "amount": float(r.amount or 0.0),
+         "created_at": r.timestamp or _now(), "status": "succeeded"}
+        for r in rows
+    ]
 
 
 def index_by_txn(charges):

@@ -39,20 +39,48 @@ def _parse_date(value):
         return None
 
 
+def parse_money(value, default=0.0):
+    """Coerce a user-entered money string to float, tolerating ``$``, thousands
+    commas and ``k``/``m`` suffixes (``"$30,000"`` -> 30000.0, ``"3.5k"`` -> 3500.0).
+    Never raises — bad input returns ``default`` instead of 500-ing the page."""
+    if value is None:
+        return default
+    s = str(value).strip().lower().replace("$", "").replace(",", "").replace("_", "")
+    if not s:
+        return default
+    mult = 1.0
+    if s.endswith("k"):
+        mult, s = 1_000.0, s[:-1]
+    elif s.endswith("m"):
+        mult, s = 1_000_000.0, s[:-1]
+    try:
+        return float(s) * mult
+    except ValueError:
+        return default
+
+
+def parse_int(value, default=0):
+    """Coerce to int via :func:`parse_money`; never raises."""
+    try:
+        return int(round(parse_money(value, default)))
+    except (ValueError, TypeError):
+        return default
+
+
 def _apply_form(req, form):
     req.title = form.get("title", "").strip()
     req.description = form.get("description", "").strip()
     req.category = form.get("category", "").strip()
     req.quantity_or_usage = form.get("quantity_or_usage", "").strip()
     req.deadline = _parse_date(form.get("deadline"))
-    req.budget_ceiling = float(form.get("budget_ceiling") or 0)
+    req.budget_ceiling = parse_money(form.get("budget_ceiling"), 0.0)
     req.must_haves = form.get("must_haves", "").strip()
     req.nice_to_haves = form.get("nice_to_haves", "").strip()
-    req.priority_price = int(form.get("priority_price") or 3)
-    req.priority_time = int(form.get("priority_time") or 3)
-    req.priority_risk = int(form.get("priority_risk") or 3)
-    req.priority_quality = int(form.get("priority_quality") or 3)
-    req.priority_terms = int(form.get("priority_terms") or 3)
+    req.priority_price = parse_int(form.get("priority_price"), 3)
+    req.priority_time = parse_int(form.get("priority_time"), 3)
+    req.priority_risk = parse_int(form.get("priority_risk"), 3)
+    req.priority_quality = parse_int(form.get("priority_quality"), 3)
+    req.priority_terms = parse_int(form.get("priority_terms"), 3)
     req.status = form.get("status", "draft")
 
 
@@ -163,13 +191,13 @@ def add_vendor(req_id):
     vendor = VendorOption(
         request_id=req.id,
         name=form.get("name", "").strip() or "Unnamed vendor",
-        price=float(form.get("price") or 0),
-        lead_time_days=int(form.get("lead_time_days") or 0),
-        score_price=int(form.get("score_price") or 0),
-        score_time=int(form.get("score_time") or 0),
-        score_risk=int(form.get("score_risk") or 0),
-        score_quality=int(form.get("score_quality") or 0),
-        score_terms=int(form.get("score_terms") or 0),
+        price=parse_money(form.get("price"), 0.0),
+        lead_time_days=parse_int(form.get("lead_time_days"), 0),
+        score_price=parse_int(form.get("score_price"), 0),
+        score_time=parse_int(form.get("score_time"), 0),
+        score_risk=parse_int(form.get("score_risk"), 0),
+        score_quality=parse_int(form.get("score_quality"), 0),
+        score_terms=parse_int(form.get("score_terms"), 0),
         notes=form.get("notes", "").strip(),
     )
     db.session.add(vendor)

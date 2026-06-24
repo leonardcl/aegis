@@ -28,6 +28,7 @@ def create_app(config_class=Config):
             "on restart). Set SECRET_KEY in the environment for stable sessions.")
 
     _install_basic_auth(app)
+    _install_csrf(app)
 
     db.init_app(app)
 
@@ -110,3 +111,33 @@ def _install_basic_auth(app):
             "Authentication required.", 401,
             {"WWW-Authenticate": 'Basic realm="Aegis CFO"'},
         )
+
+
+def _install_csrf(app):
+    """Same-origin CSRF protection on state-changing requests.
+
+    Blocks classic cross-site form POSTs by requiring the Origin/Referer (when the
+    browser sends one) to match the request host. Cheap and zero-template-churn.
+    The bearer-token ``/hermes`` API is exempt (Authorization header, not cookies,
+    so it isn't CSRF-able). Skipped under TESTING and when AEGIS_CSRF is disabled.
+    (Per-form token CSRF is the Phase-5 hardening; this stops the actual attack.)
+    """
+    from urllib.parse import urlparse
+
+    if os.environ.get("AEGIS_CSRF", "on").lower() in ("0", "off", "false", "no"):
+        return
+
+    safe_methods = {"GET", "HEAD", "OPTIONS", "TRACE"}
+
+    @app.before_request
+    def _csrf_same_origin():
+        if app.testing or request.method in safe_methods:
+            return None
+        if request.path.startswith("/hermes/"):
+            return None  # bearer-token API — not cookie-auth, not CSRF-able
+        source = request.headers.get("Origin") or request.headers.get("Referer")
+        if not source:
+            return None  # no cross-site indicator to act on
+        if urlparse(source).netloc and urlparse(source).netloc != request.host:
+            return Response("Cross-origin request blocked (CSRF).", 403)
+        return None

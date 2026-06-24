@@ -122,7 +122,17 @@ def send_to_guardrail(request):
 
 def decide_approval(approval, decision, decided_by="management"):
     """Apply a human decision (approve/reject) to an ApprovalRequest and post a
-    ledger entry recording the action."""
+    ledger entry recording the action.
+
+    Status-guarded and idempotent: only a ``NEEDS_APPROVAL`` item can be decided.
+    A double-submit (back button / double-click) or a hand-crafted POST trying to
+    force-post a ``BLOCKED`` or already-decided item is a safe no-op — it returns
+    the approval unchanged and posts nothing. This protects the exact guardrail
+    invariant the product is built on: a blocked spend can never reach the ledger.
+    """
+    if approval.status != "NEEDS_APPROVAL" or approval.decided_at is not None:
+        return approval
+
     decision = decision.lower()
     approval.decided_by = decided_by
     approval.decided_at = datetime.utcnow()
@@ -151,7 +161,11 @@ def decide_approval(approval, decision, decided_by="management"):
         policy_decision=approval.policy_decision,
         policy_rule=approval.policy_rule,
         outcome=outcome,
-        transaction_id=f"txn_{approval.request_id}_{approval.id}",
+        # Stripe-style id with an "ch_aegis_" prefix so reconciliation can
+        # recognise a spend Aegis authorised + posted through its own guardrail
+        # and pair it with a confirmed Stripe twin (see stripe_source) instead of
+        # flagging it as a false ledger-only discrepancy.
+        transaction_id=f"ch_aegis_{approval.request_id}_{approval.id}",
         created_by=decided_by,
     )
     db.session.add(entry)

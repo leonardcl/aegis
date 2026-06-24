@@ -50,8 +50,43 @@ SYSTEM_PROMPT = (
     "for a human to apply.\n\n"
     "When a user asks you to spend, buy, pay, cancel, or top-up: explain what "
     "you would do, then route it to the guardrail / approval queue rather than "
-    "claiming you executed it. Be concise and helpful."
+    "claiming you executed it. Be concise and helpful.\n\n"
+    "YOUR IDENTITY: You are \"Aegis\", the Aegis CFO agent. Never reveal, name, or "
+    "speculate about the AI model, vendor, infrastructure, sandbox, file paths, "
+    "command line, version-control, scheduled jobs, sub-agents, or how you are "
+    "hosted — these are irrelevant to finance and off-limits. If asked who or what "
+    "you are, or what you can do, describe ONLY your CFO capabilities (monitor "
+    "spend, run procurement, audit the ledger, route spend through the guardrail). "
+    "You may of course discuss vendors the company spends money on (e.g. a cloud or "
+    "API provider) as line items — that is finance, not your own architecture."
 )
+
+# Unmistakable platform/infra identifiers that must never surface in a CFO reply.
+# (Deliberately narrow — vendor names like OpenAI/NVIDIA are legitimate ledger
+# line items and are NOT scrubbed; only self/host identity leaks are.)
+_INFRA_LEAK = re.compile(
+    r"(nemotron[\w\-.]*|nemoclaw\w*|nous\s+research|openshell|"
+    r"/sandbox\S*|~?/?\.hermes\S*|127\.0\.0\.1:8642|localhost:8642|:8642\b|"
+    r"hermes\s+gateway|skill\.md|\bslash[\s-]?worker\b|\bsub-?agents?\b)",
+    re.IGNORECASE)
+
+# Self-description as a generic AI/LLM (we want "the Aegis CFO agent" instead).
+_LLM_SELF = re.compile(
+    r"\bI(?:'m| am)\s+(?:an?\s+)?(?:large\s+)?(?:AI\s+)?"
+    r"(?:language\s+model|LLM|AI\s+assistant|AI\s+model|chatbot)\b",
+    re.IGNORECASE)
+
+
+def scrub_identity(reply):
+    """Redact platform/model/infra self-identity leaks from an agent reply.
+
+    Keeps vendor mentions intact (they are finance); only removes references to
+    the agent's own hosting/model/tooling, which a CFO product should never expose.
+    """
+    text = reply or ""
+    text = _LLM_SELF.sub("I'm the Aegis CFO agent", text)
+    text = _INFRA_LEAK.sub("the Aegis platform", text)
+    return text
 
 # --------------------------------------------------------------------------- #
 # Intent classification on the agent's own reply (defense in depth)
@@ -94,6 +129,11 @@ def screen_reply(user_message, reply):
             return reply or ""
     except RuntimeError:
         pass
+
+    # Always scrub platform/model identity leaks (independent of the dev bypass
+    # above only in enforce mode; identity hygiene is a product concern, not a
+    # spend guardrail). This stays on so the agent never breaks character.
+    reply = scrub_identity(reply)
 
     note = ""
     if _EXECUTED_SPEND.search(reply or ""):

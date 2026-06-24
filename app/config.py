@@ -52,6 +52,10 @@ class Config:
     HERMES_API_KEY = os.environ.get("HERMES_API_KEY", "")
     HERMES_MODEL = os.environ.get("HERMES_MODEL", "nvidia/nemotron-3-super-120b-a12b")
     HERMES_TIMEOUT = int(os.environ.get("HERMES_TIMEOUT", "90"))
+    # Shorter timeout for the interactive chatbot so a question issued while the
+    # (serialized) model is busy with a council call fails fast instead of hanging
+    # the panel. The client also aborts a little after this.
+    HERMES_CHAT_TIMEOUT = int(os.environ.get("HERMES_CHAT_TIMEOUT", "30"))
     # Max tokens per Hermes reasoning turn (tool-augmented mode).
     HERMES_MAX_TOKENS = int(os.environ.get("HERMES_MAX_TOKENS", "400"))
 
