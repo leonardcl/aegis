@@ -44,6 +44,18 @@ def test_run_daily_review_executes_within_policy(app):
         assert topups[0].policy_decision == "ALLOW"
 
 
+def test_daily_review_is_idempotent(app):
+    """Re-running the review must not duplicate actions or double-count savings."""
+    with app.app_context():
+        feed = {"subscriptions": [{"vendor": "DeadTool", "monthly_cost": 900, "usage_30d": 0}],
+                "credits": []}
+        first = autonomy.run_daily_review(feed=feed)
+        second = autonomy.run_daily_review(feed=feed)
+        assert first["actions_taken"] == 1
+        assert second["actions_taken"] == 0 and second["savings_month"] == 0
+        assert ledger_service.total_savings() == 900
+
+
 def test_zero_outflow_cancel_is_allowed_for_any_payee(app):
     """A cancellation moves no money, so it auto-approves even for an unlisted payee."""
     from app.services import guardrail_service

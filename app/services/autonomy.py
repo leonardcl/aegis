@@ -76,6 +76,17 @@ def run_daily_review(feed=None, persist=True):
     """
     feed = feed or load_usage_feed()
     proposals = analyze(feed)
+
+    # Idempotency: skip a proposal the agent has already acted on in a prior
+    # review, so re-running the loop doesn't duplicate ledger rows / double-count
+    # savings.
+    try:
+        done = {(e.action, e.payee) for e in LedgerEntry.query
+                .filter(LedgerEntry.created_by == "agent").all()}
+    except Exception:
+        done = set()
+    proposals = [p for p in proposals if (p["action"], p["payee"]) not in done]
+
     executed, escalated, blocked = [], [], []
     savings_total = 0.0
 
