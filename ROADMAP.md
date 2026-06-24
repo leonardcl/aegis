@@ -61,26 +61,26 @@ A reasonable buyer/judge can run it and find **no broken paths, no false claims,
 Ordered by ROI and risk. Each phase ends with `pytest` green + a commit. The working spine is
 never rewritten — changes are additive/surgical.
 
-### Phase 0 — Safety & Foundation `[blocks the box / must be first]`
+### Phase 0 — Safety & Foundation ✅ DONE
 - [x] **0.1** Version control: `git init`, `.gitignore` (secrets/venv/db/logs excluded), baseline on `main`, work on `dev-hardening`.
-- [ ] **0.2** Env-gate the dev server: `run.py` reads `FLASK_DEBUG` (default **OFF**), `HOST`/`PORT` from env. Kills the public-tunnel RCE (`debug=True` + leaked Werkzeug PIN).
-- [ ] **0.3** Fail-closed `SECRET_KEY`: refuse the hardcoded dev default when not in debug.
-- [ ] **0.4** Guardrail **dev-toggle** `GUARDRAILS_DISABLED` (default OFF, loud `dev_bypass` rule, startup warning). Gates `evaluate_policy` + `screen_reply` only; the self-modification BLOCK stays denied even in dev. *(This is the user's "delete guardrails for development" — reversible, not destructive.)*
-- [ ] **0.5** Optional shared-password Basic-Auth shim (`AEGIS_BASIC_AUTH` env, default OFF) to protect approve/reject during a public demo window.
+- [x] **0.2** Env-gate the dev server: `run.py` reads `FLASK_DEBUG` (default **OFF**), `HOST`/`PORT` from env. Kills the public-tunnel RCE.
+- [x] **0.3** Fail-closed `SECRET_KEY`: random per-process key when unset (no known-constant key).
+- [x] **0.4** Guardrail **dev-toggle** `GUARDRAILS_DISABLED` (default OFF, loud `dev_bypass`, startup warning). Gates `evaluate_policy` + `screen_reply`; self-modification BLOCK stays denied.
+- [x] **0.5** Optional shared-password Basic-Auth shim (`AEGIS_BASIC_AUTH`, default OFF).
 
-### Phase 1 — Correctness `[no flaws]`
-- [ ] **1.1** Approval idempotency + status guard: `decide_approval` early-returns unless `status == NEEDS_APPROVAL`; route + UI reflect it; `LedgerEntry.transaction_id` made unique. *(Stops force-posting a BLOCKED item and double-posting.)*
-- [ ] **1.2** Reconciliation-poison fix: an approved spend gets a Stripe-style twin (and/or reconcile only expects a twin for stripe-pattern ids), so approve-then-audit doesn't fabricate a discrepancy.
-- [ ] **1.3** Numeric input hardening: a `parse_money()` helper (strips `$`/commas, tolerates `30k`) used in `procurement._apply_form` + `add_vendor`; no more 500 on `"$30,000"`.
-- [ ] **1.4** Chatbot persona-leak fix: harden `SYSTEM_PROMPT` (never disclose model/sandbox/platform), scrub leak terms in `screen_reply`, deterministic canned replies for "who are you / what can you do."
-- [ ] **1.5** Chatbot latency UX: lower chat timeout, `agent_chat.js` AbortController + disable send while a council job runs.
-- [ ] **1.6** CSRF protection on state-changing routes.
+### Phase 1 — Correctness ✅ DONE
+- [x] **1.1** Approval idempotency + status guard: `decide_approval` early-returns unless `NEEDS_APPROVAL` (route + service). Stops force-posting a BLOCKED item and double-posting.
+- [x] **1.2** Reconciliation-poison fix: approved spend gets a `ch_aegis_` Stripe-style id + a confirmed twin derived from the ledger; approve-then-audit no longer fabricates a discrepancy.
+- [x] **1.3** Numeric input hardening: `parse_money()`/`parse_int()` tolerate `$`/commas/`k`/`m`; no 500 on `"$30,000"`.
+- [x] **1.4** Chatbot persona-leak fix: hardened `SYSTEM_PROMPT` + canned identity reply + `scrub_identity` (vendors preserved).
+- [x] **1.5** Chatbot latency UX: shorter `HERMES_CHAT_TIMEOUT` + client AbortController + send-disable.
+- [x] **1.6** CSRF protection: same-origin Origin/Referer guard on state-changing routes (`/hermes` exempt); per-form tokens deferred to 5.x.
 
-### Phase 2 — Guardrail completeness `[centerpiece — accurate & precise]`
-- [ ] **2.1** Default-deny **payee allowlist** (config-driven): unlisted payee → BLOCK.
-- [ ] **2.2** **Per-transaction cap** distinct from the approval threshold.
-- [ ] **2.3** Ledger-backed **daily / monthly budget** accumulator inside `evaluate_policy`.
-- [ ] **2.4** Boundary tests: allow/needs-approval/block, allowlist, per-txn cap, budget exhaustion, negative/zero.
+### Phase 2 — Guardrail completeness ✅ DONE
+- [x] **2.1** Default-deny **payee allowlist** (env-configurable): unlisted payee → NEEDS_APPROVAL (human vets a first-time payee; the agent never auto-pays a stranger). Blocklist → BLOCK.
+- [x] **2.2** **Per-transaction cap** (BLOCK) distinct from the approval threshold.
+- [x] **2.3** Ledger-backed **daily / monthly budget** accumulator inside `evaluate_policy` (UTC). Also fixed a real `date.today()`-vs-`utcnow()` day-drift bug.
+- [x] **2.4** Boundary tests: allow/needs-approval/block, allowlist, per-txn cap, daily+monthly budget, negative.
 
 ### Phase 3 — Autonomous hero loop + demo coherence `[the autonomy story]`
 - [ ] **3.1** "**Run daily review**" endpoint + service: ingest a mock usage feed → flag a zero-usage subscription → propose `cancel_subscription` → guardrail ALLOW → ledger entry with `$X/mo saved`.

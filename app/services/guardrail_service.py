@@ -4,18 +4,66 @@ Decides whether a procurement spend can proceed automatically, needs human
 approval, or must be blocked outright. This is intentionally simple and
 deterministic so the demo clearly shows the agent cannot spend freely.
 """
-from datetime import datetime
+import os
+from datetime import date, datetime
 
 from flask import current_app
 
 from ..extensions import db
 from ..models import ApprovalRequest, LedgerEntry
 
-# Policy thresholds
-AUTO_APPROVE_LIMIT = 5_000      # below this, ALLOW
-HUMAN_APPROVAL_LIMIT = 50_000   # below this, NEEDS_APPROVAL; at/above, BLOCK
+# --------------------------------------------------------------------------- #
+# Policy thresholds — the deterministic spend boundary. Tunable via env so a
+# deployment can dial the mandate without code changes (see docs/GUARDRAILS.md).
+# --------------------------------------------------------------------------- #
+def _num_env(name, default):
+    try:
+        return float(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+AUTO_APPROVE_LIMIT = _num_env("AEGIS_AUTO_APPROVE_LIMIT", 5_000)      # <= -> ALLOW
+PER_TRANSACTION_CAP = _num_env("AEGIS_PER_TRANSACTION_CAP", 50_000)   # >= single txn -> BLOCK
+DAILY_BUDGET = _num_env("AEGIS_DAILY_BUDGET", 100_000)               # over -> NEEDS_APPROVAL
+MONTHLY_BUDGET = _num_env("AEGIS_MONTHLY_BUDGET", 250_000)           # over -> BLOCK
+# Back-compat alias (the per-transaction cap is the hard spend ceiling).
+HUMAN_APPROVAL_LIMIT = PER_TRANSACTION_CAP
 
 BLOCKED_PAYEES = {"unverified vendor", "sanctioned ltd"}
+
+# Default-deny allowlist: the company's *vetted* payees, eligible for automatic
+# payment (subject to cap + budget + approval threshold). A payee that is not on
+# the allowlist and not blocked is treated as a NEW payee and routed to human
+# approval for vetting — the agent never autonomously pays a stranger. Extend via
+# AEGIS_ALLOWLIST="vendor a,vendor b"; disable enforcement with AEGIS_ALLOWLIST_ENABLED=0.
+_DEFAULT_ALLOWLIST = {
+    "aws", "nimbuscloud", "atlassian", "github", "slack", "cloudflare",
+    "cloudflare inc", "datavault", "hyperscale", "openai", "anthropic", "nvidia",
+    "vercel", "notion", "stripe", "figma", "zoom", "okta", "snyk", "gitlab",
+    "meridian", "clearaudit", "google cloud", "datadog",
+}
+ALLOWLIST = _DEFAULT_ALLOWLIST | {
+    p.strip().lower() for p in os.environ.get("AEGIS_ALLOWLIST", "").split(",")
+    if p.strip()
+}
+ALLOWLIST_ENABLED = os.environ.get("AEGIS_ALLOWLIST_ENABLED", "1").lower() in (
+    "1", "true", "yes", "on")
+
+
+def _posted_spend(window):
+    """Posted-outflow total for budget checks; 0.0 outside a db context."""
+    from . import ledger_service
+    try:
+        # UTC: ledger timestamps are utcnow()-based, so "today"/"this month" must
+        # be measured in UTC too (date.today() is local and drifts a day off
+        # across the UTC boundary).
+        utc_today = datetime.utcnow().date()
+        if window == "day":
+            return ledger_service.today_spend(utc_today)
+        return ledger_service.month_spend(utc_today)
+    except Exception:
+        return 0.0
 
 
 def _guardrails_disabled():
@@ -43,39 +91,67 @@ def evaluate_policy(amount, payee="", category=""):
             "reason": "Guardrails disabled for development (GUARDRAILS_DISABLED).",
         }
 
+    amount = float(amount or 0.0)
     payee_norm = (payee or "").strip().lower()
 
+    # --- Hard BLOCK conditions (no human can override in-app) --------------- #
     if payee_norm in BLOCKED_PAYEES:
         return {
-            "decision": "BLOCK",
-            "rule": "payee_blocklist",
+            "decision": "BLOCK", "rule": "payee_blocklist",
             "reason": f"Payee '{payee}' is on the blocklist and cannot be paid.",
         }
 
-    if amount >= HUMAN_APPROVAL_LIMIT:
+    if amount < 0:
         return {
-            "decision": "BLOCK",
-            "rule": "hard_spend_cap",
-            "reason": (
-                f"Amount ${amount:,.0f} exceeds the hard spend cap of "
-                f"${HUMAN_APPROVAL_LIMIT:,.0f}. Escalation required."
-            ),
+            "decision": "BLOCK", "rule": "invalid_amount",
+            "reason": "Amount cannot be negative.",
+        }
+
+    if amount >= PER_TRANSACTION_CAP:
+        return {
+            "decision": "BLOCK", "rule": "per_transaction_cap",
+            "reason": (f"Amount ${amount:,.0f} meets/exceeds the per-transaction "
+                       f"cap of ${PER_TRANSACTION_CAP:,.0f}. Escalation required."),
+        }
+
+    month_spent = _posted_spend("month")
+    if month_spent + amount > MONTHLY_BUDGET:
+        return {
+            "decision": "BLOCK", "rule": "monthly_budget_exceeded",
+            "reason": (f"${amount:,.0f} would push month-to-date spend "
+                       f"(${month_spent:,.0f}) past the monthly budget of "
+                       f"${MONTHLY_BUDGET:,.0f}."),
+        }
+
+    # --- NEEDS_APPROVAL conditions (a human may sign off) ------------------- #
+    if ALLOWLIST_ENABLED and payee_norm and payee_norm not in ALLOWLIST:
+        return {
+            "decision": "NEEDS_APPROVAL", "rule": "payee_not_allowlisted",
+            "reason": (f"'{payee}' is not on the vetted payee allowlist; a human "
+                       f"must approve a first-time payee before any auto-payment."),
+        }
+
+    day_spent = _posted_spend("day")
+    if day_spent + amount > DAILY_BUDGET:
+        return {
+            "decision": "NEEDS_APPROVAL", "rule": "daily_budget_exceeded",
+            "reason": (f"${amount:,.0f} would push today's spend "
+                       f"(${day_spent:,.0f}) past the daily budget of "
+                       f"${DAILY_BUDGET:,.0f}; human sign-off required."),
         }
 
     if amount >= AUTO_APPROVE_LIMIT:
         return {
-            "decision": "NEEDS_APPROVAL",
-            "rule": "above_auto_approve_limit",
-            "reason": (
-                f"Amount ${amount:,.0f} is above the auto-approve limit of "
-                f"${AUTO_APPROVE_LIMIT:,.0f}; human sign-off required."
-            ),
+            "decision": "NEEDS_APPROVAL", "rule": "above_auto_approve_limit",
+            "reason": (f"Amount ${amount:,.0f} is above the auto-approve limit of "
+                       f"${AUTO_APPROVE_LIMIT:,.0f}; human sign-off required."),
         }
 
+    # --- ALLOW: allowlisted payee, within cap, budget and approval threshold - #
     return {
-        "decision": "ALLOW",
-        "rule": "within_auto_approve_limit",
-        "reason": f"Amount ${amount:,.0f} is within the auto-approve limit.",
+        "decision": "ALLOW", "rule": "within_auto_approve_limit",
+        "reason": (f"Amount ${amount:,.0f} is within the auto-approve limit for a "
+                   f"vetted payee."),
     }
 
 

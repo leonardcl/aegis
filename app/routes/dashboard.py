@@ -1,5 +1,5 @@
 """Dashboard command center blueprint."""
-from datetime import date
+from datetime import datetime
 
 from flask import Blueprint, render_template
 
@@ -11,7 +11,9 @@ bp = Blueprint("dashboard", __name__)
 
 @bp.route("/")
 def index():
-    today = date.today()
+    # UTC to match the utcnow()-based ledger timestamps (avoids a day-drift in
+    # "today's spend" across the UTC boundary).
+    today = datetime.utcnow().date()
 
     monthly_budget = 250_000.0
     spend = ledger_service.total_spend()
@@ -78,7 +80,7 @@ def _spend_trend():
     from collections import OrderedDict
     from datetime import timedelta
 
-    today = date.today()
+    today = datetime.utcnow().date()
     buckets = OrderedDict()
     for i in range(6, -1, -1):
         d = today - timedelta(days=i)
