@@ -14,6 +14,7 @@ demo is reproducible; the guardrail decision is the same plain code as everywher
 """
 import json
 import os
+import re
 from datetime import datetime
 
 from ..extensions import db
@@ -25,6 +26,11 @@ _FEED_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)),
 
 # Risk rule: top up an API credit projected to run dry within this many days.
 CREDIT_RUNWAY_DAYS = 7
+
+
+def _slug(text):
+    """Lowercase alphanumeric slug for building stable transaction ids."""
+    return re.sub(r"[^a-z0-9]+", "_", (text or "").lower()).strip("_") or "x"
 
 
 def load_usage_feed(path=None):
@@ -90,7 +96,7 @@ def run_daily_review(feed=None, persist=True):
     executed, escalated, blocked = [], [], []
     savings_total = 0.0
 
-    for i, p in enumerate(proposals):
+    for p in proposals:
         decision = guardrail_service.evaluate_policy(p["amount"], payee=p["payee"])
         rec = {**p, "decision": decision["decision"], "rule": decision["rule"],
                "decision_reason": decision["reason"]}
@@ -101,11 +107,15 @@ def run_daily_review(feed=None, persist=True):
             outcome = "saved" if is_cancel else "posted"
             ledger_amount = p["savings_month"] if is_cancel else p["amount"]
             if persist:
+                # Stable, collision-free id keyed on action+payee (idempotency
+                # guarantees one per pair) — NOT a positional index, which could
+                # be reused across runs and fabricate a reconciliation mismatch.
+                txn_id = f"ch_aegis_review_{_slug(p['action'])}_{_slug(p['payee'])}"
                 db.session.add(LedgerEntry(
                     action=p["action"], payee=p["payee"], amount=ledger_amount,
                     reason=p["reason"], policy_decision="ALLOW",
                     policy_rule=decision["rule"], outcome=outcome,
-                    transaction_id=f"ch_aegis_review_{i}", created_by="agent"))
+                    transaction_id=txn_id, created_by="agent"))
             savings_total += p["savings_month"]
             executed.append(rec)
         elif decision["decision"] == "NEEDS_APPROVAL":

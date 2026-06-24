@@ -21,18 +21,20 @@ from sqlalchemy import func
 
 from ..extensions import db
 from ..models import LedgerEntry
-from . import stripe_source
+from . import guardrail_service, stripe_source
 
 # --------------------------------------------------------------------------- #
-# Policy snapshot (what was "in force"). Mirrors guardrail_service thresholds.
-# For real point-in-time replay you would stamp each ledger row with the policy
-# version in force; here we expose a single snapshot the replay reads against.
+# Policy snapshot (what was "in force"). Sourced from guardrail_service so the
+# retrospective compliance replay uses the SAME effective limits as the live
+# spend gate (incl. agent-cfo.policy.yaml / AEGIS_* overrides) — the audit can't
+# silently disagree with the mandate. For true point-in-time replay you would
+# stamp each ledger row with the policy version in force.
 # --------------------------------------------------------------------------- #
 POLICY = {
     "version": "2026.06-1",
-    "auto_approve_limit": 5_000,
-    "human_approval_limit": 50_000,
-    "blocked_payees": {"unverified vendor", "sanctioned ltd"},
+    "auto_approve_limit": guardrail_service.AUTO_APPROVE_LIMIT,
+    "human_approval_limit": guardrail_service.PER_TRANSACTION_CAP,
+    "blocked_payees": set(guardrail_service.BLOCKED_PAYEES),
     # Outflow actions that actually move money (need a Stripe match + approval).
     "spend_actions": {"approve_spend", "pay_invoice", "create_subscription",
                       "topup_credits"},

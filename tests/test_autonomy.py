@@ -5,7 +5,7 @@ guardrail: cancel a zero-usage subscription (saving money) and top up a credit
 about to run dry — all auto-executed because the guardrail ALLOWs them.
 """
 from app.models import LedgerEntry
-from app.services import autonomy, ledger_service
+from app.services import audit_engine, autonomy, ledger_service
 
 
 def test_analyze_flags_waste_and_risk():
@@ -54,6 +54,24 @@ def test_daily_review_is_idempotent(app):
         assert first["actions_taken"] == 1
         assert second["actions_taken"] == 0 and second["savings_month"] == 0
         assert ledger_service.total_savings() == 900
+
+
+def test_repeated_reviews_with_changed_feed_do_not_fabricate_discrepancy(app):
+    """Two reviews with different feeds must not collide transaction ids and
+    create a false reconciliation amount_mismatch (regression guard)."""
+    with app.app_context():
+        autonomy.run_daily_review(feed={
+            "subscriptions": [], "credits": [
+                {"service": "OpenAI", "balance_usd": 12, "burn_rate_day": 12, "topup_usd": 500}]})
+        autonomy.run_daily_review(feed={
+            "subscriptions": [], "credits": [
+                {"service": "Anthropic", "balance_usd": 10, "burn_rate_day": 12, "topup_usd": 700}]})
+        ids = [e.transaction_id for e in LedgerEntry.query.filter_by(created_by="agent").all()]
+        assert len(ids) == len(set(ids)), f"duplicate agent txn ids: {ids}"
+        recon = audit_engine.reconcile(30)
+        aegis_mismatch = [x for x in recon["amount_mismatch"]
+                          if x["transaction_id"].startswith("ch_aegis_")]
+        assert not aegis_mismatch, f"fabricated mismatch: {aegis_mismatch}"
 
 
 def test_zero_outflow_cancel_is_allowed_for_any_payee(app):
