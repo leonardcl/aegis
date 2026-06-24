@@ -13,42 +13,77 @@ from ..extensions import db
 from ..models import ApprovalRequest, LedgerEntry
 
 # --------------------------------------------------------------------------- #
-# Policy thresholds — the deterministic spend boundary. Tunable via env so a
-# deployment can dial the mandate without code changes (see docs/GUARDRAILS.md).
+# Policy thresholds — the deterministic spend boundary.
+#
+# Source of truth is the out-of-process policy file ``agent-cfo.policy.yaml`` at
+# the repo root (the agent may *propose* edits, never apply them). Precedence:
+#   built-in defaults  <  agent-cfo.policy.yaml  <  AEGIS_* environment vars.
+# This is the NemoClaw-style "config the agent can't touch" boundary made real.
 # --------------------------------------------------------------------------- #
-def _num_env(name, default):
+_POLICY_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    "agent-cfo.policy.yaml")
+
+
+def _load_policy_file():
+    """Load agent-cfo.policy.yaml if present; {} on any error (defaults apply)."""
     try:
-        return float(os.environ.get(name, "") or default)
+        import yaml
+        with open(_POLICY_FILE) as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+
+_FILE = _load_policy_file()
+_SPEND = _FILE.get("spend") or {}
+_PAYEES = _FILE.get("payees") or {}
+
+
+def _num(env_name, file_key, default):
+    """Resolve a numeric limit: env override, else policy file, else default."""
+    raw = os.environ.get(env_name)
+    val = raw if (raw not in (None, "")) else _SPEND.get(file_key, default)
+    try:
+        return float(val)
     except (TypeError, ValueError):
         return float(default)
 
 
-AUTO_APPROVE_LIMIT = _num_env("AEGIS_AUTO_APPROVE_LIMIT", 5_000)      # <= -> ALLOW
-PER_TRANSACTION_CAP = _num_env("AEGIS_PER_TRANSACTION_CAP", 50_000)   # >= single txn -> BLOCK
-DAILY_BUDGET = _num_env("AEGIS_DAILY_BUDGET", 100_000)               # over -> NEEDS_APPROVAL
-MONTHLY_BUDGET = _num_env("AEGIS_MONTHLY_BUDGET", 250_000)           # over -> BLOCK
+AUTO_APPROVE_LIMIT = _num("AEGIS_AUTO_APPROVE_LIMIT", "auto_approve_limit", 5_000)   # <= -> ALLOW
+PER_TRANSACTION_CAP = _num("AEGIS_PER_TRANSACTION_CAP", "per_transaction_max", 50_000)  # >= -> BLOCK
+DAILY_BUDGET = _num("AEGIS_DAILY_BUDGET", "daily_budget", 100_000)                   # over -> NEEDS_APPROVAL
+MONTHLY_BUDGET = _num("AEGIS_MONTHLY_BUDGET", "monthly_budget", 250_000)             # over -> BLOCK
 # Back-compat alias (the per-transaction cap is the hard spend ceiling).
 HUMAN_APPROVAL_LIMIT = PER_TRANSACTION_CAP
-
-BLOCKED_PAYEES = {"unverified vendor", "sanctioned ltd"}
 
 # Default-deny allowlist: the company's *vetted* payees, eligible for automatic
 # payment (subject to cap + budget + approval threshold). A payee that is not on
 # the allowlist and not blocked is treated as a NEW payee and routed to human
-# approval for vetting — the agent never autonomously pays a stranger. Extend via
-# AEGIS_ALLOWLIST="vendor a,vendor b"; disable enforcement with AEGIS_ALLOWLIST_ENABLED=0.
+# approval for vetting — the agent never autonomously pays a stranger.
 _DEFAULT_ALLOWLIST = {
     "aws", "nimbuscloud", "atlassian", "github", "slack", "cloudflare",
     "cloudflare inc", "datavault", "hyperscale", "openai", "anthropic", "nvidia",
     "vercel", "notion", "stripe", "figma", "zoom", "okta", "snyk", "gitlab",
     "meridian", "clearaudit", "google cloud", "datadog",
 }
-ALLOWLIST = _DEFAULT_ALLOWLIST | {
-    p.strip().lower() for p in os.environ.get("AEGIS_ALLOWLIST", "").split(",")
-    if p.strip()
-}
-ALLOWLIST_ENABLED = os.environ.get("AEGIS_ALLOWLIST_ENABLED", "1").lower() in (
-    "1", "true", "yes", "on")
+
+
+def _payee_set(file_list, env_csv):
+    out = {p.strip().lower() for p in (file_list or []) if str(p).strip()}
+    out |= {p.strip().lower() for p in os.environ.get(env_csv, "").split(",") if p.strip()}
+    return out
+
+
+BLOCKED_PAYEES = {"unverified vendor", "sanctioned ltd"} | _payee_set(
+    _PAYEES.get("blocklist"), "AEGIS_BLOCKLIST")
+ALLOWLIST = _DEFAULT_ALLOWLIST | _payee_set(_PAYEES.get("allowlist"), "AEGIS_ALLOWLIST")
+
+_ale = os.environ.get("AEGIS_ALLOWLIST_ENABLED")
+if _ale not in (None, ""):
+    ALLOWLIST_ENABLED = _ale.lower() in ("1", "true", "yes", "on")
+else:
+    ALLOWLIST_ENABLED = bool(_PAYEES.get("deny_unlisted", True))
 
 
 def _posted_spend(window):

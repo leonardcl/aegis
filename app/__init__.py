@@ -105,6 +105,9 @@ def _install_basic_auth(app):
 
     @app.before_request
     def _require_basic_auth():
+        # Health checks and static assets stay open (monitors can't send creds).
+        if request.path == "/healthz" or request.path.startswith("/static/"):
+            return None
         if _ok(request.authorization):
             return None
         return Response(

@@ -1,12 +1,27 @@
 """Dashboard command center blueprint."""
 from datetime import datetime
 
-from flask import Blueprint, flash, redirect, render_template, url_for
+from flask import Blueprint, flash, jsonify, redirect, render_template, url_for
 
+from ..extensions import db
 from ..models import ApprovalRequest, AuditReport, ProcurementRequest
 from ..services import audit_service, ledger_service
 
 bp = Blueprint("dashboard", __name__)
+
+
+@bp.route("/healthz")
+def healthz():
+    """Liveness/readiness probe (no auth) — checks the DB and reports Hermes mode."""
+    from ..services import hermes_client
+    db_ok = True
+    try:
+        db.session.execute(db.text("SELECT 1"))
+    except Exception:
+        db_ok = False
+    return jsonify({"status": "ok" if db_ok else "degraded",
+                    "db": db_ok, "hermes_live": hermes_client.is_live()}), (
+        200 if db_ok else 503)
 
 
 @bp.route("/")

@@ -16,6 +16,7 @@ failure modes AUDIT-FLOW.md calls out so the audit has something to catch:
 Each charge is keyed by ``transaction_id`` so it can be joined to
 ``LedgerEntry.transaction_id``.
 """
+import os
 from datetime import datetime, timedelta
 
 
@@ -23,12 +24,54 @@ def _now():
     return datetime.utcnow()
 
 
+def _stripe_live_enabled():
+    return os.environ.get("STRIPE_LIVE", "").lower() in ("1", "true", "yes", "on")
+
+
+def get_charges_live(period_days=30):
+    """Fetch real Stripe (test-mode) charges mapped to our shape.
+
+    Returns None on any failure (no package, no key, API error) so the caller
+    transparently falls back to the deterministic mock. This is the sponsor
+    tie-in: set STRIPE_LIVE=1 and STRIPE_SECRET_KEY=sk_test_... to reconcile the
+    ledger against real Stripe test-mode charges — no other code changes.
+    """
+    key = os.environ.get("STRIPE_SECRET_KEY", "")
+    if not key:
+        return None
+    try:
+        import stripe
+        stripe.api_key = key
+        since = int((_now() - timedelta(days=period_days)).timestamp())
+        out = []
+        for c in stripe.Charge.list(created={"gte": since}, limit=100).auto_paging_iter():
+            billing = (getattr(c, "billing_details", None) or {}) or {}
+            out.append({
+                "transaction_id": c.id,
+                "payee": (c.description or billing.get("name") or "unknown"),
+                "amount": (c.amount or 0) / 100.0,
+                "created_at": datetime.utcfromtimestamp(c.created),
+                "status": c.status,
+            })
+        return out
+    except Exception:
+        return None
+
+
 def get_charges(period_days=30):
     """Return the list of Stripe charges within the period.
+
+    Real Stripe test-mode when STRIPE_LIVE=1 (falls back to the mock on any
+    failure); otherwise the deterministic demo mock below.
 
     Returns:
         list[dict]: each ``{transaction_id, payee, amount, created_at, status}``.
     """
+    if _stripe_live_enabled():
+        live = get_charges_live(period_days)
+        if live is not None:
+            return live
+
     now = _now()
     charges = [
         # --- Charges that DO match the seeded ledger (the happy path) ---------
