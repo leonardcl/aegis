@@ -26,6 +26,22 @@ buyers look hardest.
 | Viability | 6 | Live Nemotron reasoning is a real asset; **Stripe is still mocked** |
 | Presentation | 6.5 | Polished shell; chatbot persona leak + missing hero-loop beats |
 
+### Post-hardening status (after Phases 0–5 + final adversarial review)
+
+**Re-scored 8.3 / 10 — "demo-ready, go."** A second multi-agent review verified all
+**12 original findings are fixed in code** (10 fully, 2 pragmatically partial: Stripe
+is read-only reconciliation, CSRF is a same-origin header check). It found one real
+regression (a positional autonomy transaction-id that could fabricate a false
+reconciliation mismatch on a second run) — **now fixed** with a stable id + a
+regression test — and the audit's compliance replay is now sourced from the live
+guardrail limits. **96 tests pass**; deployed under gunicorn (debug off, Hermes live).
+
+Honest residual gaps (future / low severity): per-form CSRF tokens (vs the
+same-origin guard); a real Stripe *payment-execution* path (vs reconciliation-only);
+auth is opt-in (`AEGIS_BASIC_AUTH`); multi-tenant + observability (Phase 5.4/5.5).
+
+---
+
 **What's genuinely strong (protect this spine — do not rewrite):**
 - ✅ **Live multi-agent Audit Council** on real Nemotron via Hermes (`:8642`), end-to-end in
   ~38–76s (`engine=hermes`). Catches the seeded rogue $450 charge + $300 mismatch, passes
