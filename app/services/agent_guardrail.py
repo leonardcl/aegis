@@ -87,6 +87,14 @@ def screen_reply(user_message, reply):
     stays truthful about the action boundary (the agent cannot move money or
     change its own limits without the guardrail + a human).
     """
+    # Development bypass — skip output screening (see Config.GUARDRAILS_DISABLED).
+    try:
+        from flask import current_app
+        if current_app.config.get("GUARDRAILS_DISABLED"):
+            return reply or ""
+    except RuntimeError:
+        pass
+
     note = ""
     if _EXECUTED_SPEND.search(reply or ""):
         note = ("\n\n— Guardrail: I can't move money on my own. I've routed this "

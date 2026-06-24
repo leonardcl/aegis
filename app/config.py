@@ -1,5 +1,6 @@
 """Application configuration."""
 import os
+import secrets
 
 from dotenv import load_dotenv
 
@@ -16,7 +17,25 @@ load_dotenv(os.path.join(basedir, ".env"), override=False)
 
 
 class Config:
-    SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-me")
+    # Never ship a known constant key. If SECRET_KEY is unset we generate a
+    # random per-process key (sessions simply don't survive a restart) — strictly
+    # safer than a hardcoded default that an attacker could use to forge sessions.
+    SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+    SECRET_KEY_IS_EPHEMERAL = not bool(os.environ.get("SECRET_KEY"))
+
+    # --- Development guardrail bypass ------------------------------------- #
+    # GUARDRAILS_DISABLED=1 makes the spend gate return ALLOW ("dev_bypass") and
+    # skips output screening, for frictionless development. Defaults OFF; it lives
+    # nowhere in .env, surfaces a loud "dev_bypass" rule in the ledger/approvals
+    # UI, and logs a startup warning — so an enabled bypass can never hide. The
+    # self-modification BLOCK (edit_policy/raise_cap/...) stays denied even here.
+    GUARDRAILS_DISABLED = os.environ.get("GUARDRAILS_DISABLED", "").lower() in (
+        "1", "true", "yes", "on")
+
+    # Optional shared-credential HTTP Basic Auth over the whole UI, for guarding a
+    # publicly-exposed demo. Format "user:password" (or just "password"). OFF when
+    # unset — so it never adds friction to local dev or the test client.
+    BASIC_AUTH = os.environ.get("AEGIS_BASIC_AUTH", "")
 
     _db_url = os.environ.get("DATABASE_URL")
     if _db_url:

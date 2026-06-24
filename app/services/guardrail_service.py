@@ -6,6 +6,8 @@ deterministic so the demo clearly shows the agent cannot spend freely.
 """
 from datetime import datetime
 
+from flask import current_app
+
 from ..extensions import db
 from ..models import ApprovalRequest, LedgerEntry
 
@@ -16,12 +18,31 @@ HUMAN_APPROVAL_LIMIT = 50_000   # below this, NEEDS_APPROVAL; at/above, BLOCK
 BLOCKED_PAYEES = {"unverified vendor", "sanctioned ltd"}
 
 
+def _guardrails_disabled():
+    """True only when GUARDRAILS_DISABLED is set (dev bypass). Safe outside an
+    app context (returns False)."""
+    try:
+        return bool(current_app.config.get("GUARDRAILS_DISABLED"))
+    except RuntimeError:
+        return False
+
+
 def evaluate_policy(amount, payee="", category=""):
     """Return a policy decision dict for a proposed spend.
 
     Returns:
         dict with keys: decision (ALLOW/NEEDS_APPROVAL/BLOCK), rule, reason.
     """
+    # Development bypass — loud and reversible (see Config.GUARDRAILS_DISABLED).
+    # This single early-return covers both send_to_guardrail and
+    # agent_guardrail.check_action (which delegate here for money actions).
+    if _guardrails_disabled():
+        return {
+            "decision": "ALLOW",
+            "rule": "dev_bypass",
+            "reason": "Guardrails disabled for development (GUARDRAILS_DISABLED).",
+        }
+
     payee_norm = (payee or "").strip().lower()
 
     if payee_norm in BLOCKED_PAYEES:
