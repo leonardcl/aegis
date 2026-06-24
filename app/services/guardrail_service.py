@@ -123,6 +123,14 @@ def evaluate_policy(amount, payee="", category=""):
                        f"${MONTHLY_BUDGET:,.0f}."),
         }
 
+    # Zero-outflow actions (e.g. cancel_subscription) move no money, so the
+    # allowlist / budget / approval gates don't apply — only the hard BLOCKs above.
+    if amount == 0:
+        return {
+            "decision": "ALLOW", "rule": "no_outflow",
+            "reason": "No money moves (e.g. a cancellation); auto-approved.",
+        }
+
     # --- NEEDS_APPROVAL conditions (a human may sign off) ------------------- #
     if ALLOWLIST_ENABLED and payee_norm and payee_norm not in ALLOWLIST:
         return {

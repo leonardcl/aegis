@@ -1,0 +1,13 @@
+{
+  "as_of": "2026-06-25",
+  "subscriptions": [
+    {"vendor": "Atlassian", "plan": "Jira Premium", "monthly_cost": 3400, "seats": 50, "seats_used": 47, "usage_30d": 1180},
+    {"vendor": "Slack", "plan": "Business+", "monthly_cost": 2100, "seats": 60, "seats_used": 54, "usage_30d": 8800},
+    {"vendor": "LegacyAnalytics", "plan": "Growth", "monthly_cost": 1800, "seats": 10, "seats_used": 0, "usage_30d": 0},
+    {"vendor": "PixelBoard", "plan": "Team", "monthly_cost": 540, "seats": 8, "seats_used": 0, "usage_30d": 0}
+  ],
+  "credits": [
+    {"service": "OpenAI", "balance_usd": 38.0, "burn_rate_day": 12.0, "topup_usd": 500},
+    {"service": "AWS", "balance_usd": 4200.0, "burn_rate_day": 90.0, "topup_usd": 2000}
+  ]
+}

@@ -267,6 +267,7 @@ class LedgerEntry(db.Model):
 
     OUTCOME_BADGE = {
         "posted": "success",
+        "saved": "success",
         "blocked": "danger",
         "reversed": "warning",
         "pending": "info",
