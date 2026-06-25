@@ -48,6 +48,37 @@ def start_audit_job(app, period_days=30):
     return job_id
 
 
+def start_negotiation_job(app, vendor_id, max_rounds=3):
+    """Run a (live agent-to-agent) negotiation in the background. Returns a job id.
+    The vendor's negotiation result is persisted; the detail page polls for done."""
+    job_id = uuid.uuid4().hex[:12]
+    with _lock:
+        _jobs[job_id] = {"id": job_id, "kind": "negotiation", "status": "running",
+                         "vendor_id": vendor_id, "engine": None, "agreed": None,
+                         "error": None}
+
+    def _run():
+        with app.app_context():
+            try:
+                from ..extensions import db
+                from ..models import VendorOption
+                from . import negotiation
+                vendor = db.session.get(VendorOption, vendor_id)
+                result = negotiation.negotiate(vendor.name, vendor.price,
+                                               max_rounds=max_rounds)
+                vendor.negotiation = result
+                db.session.commit()
+                with _lock:
+                    _jobs[job_id].update(status="done", engine=result.get("engine"),
+                                         agreed=result.get("agreed"))
+            except Exception as exc:  # noqa: BLE001
+                with _lock:
+                    _jobs[job_id].update(status="error", error=str(exc))
+
+    threading.Thread(target=_run, daemon=True, name=f"nego-{job_id}").start()
+    return job_id
+
+
 def get_job(job_id):
     """Return a copy of the job state, or an empty dict if unknown."""
     with _lock:

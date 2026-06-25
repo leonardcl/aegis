@@ -4,6 +4,7 @@ from datetime import datetime
 from flask import (
     Blueprint,
     flash,
+    jsonify,
     redirect,
     render_template,
     request as flask_request,
@@ -155,8 +156,18 @@ def detail(req_id):
     req = ProcurementRequest.query.get_or_404(req_id)
     procurement_service.score_vendors(req)
     return render_template(
-        "procurement/detail.html", req=req, active_page="procurement"
+        "procurement/detail.html", req=req, active_page="procurement",
+        nego_job=flask_request.args.get("nego_job"),
     )
+
+
+@bp.route("/negotiation-status/<job_id>")
+def negotiation_status(job_id):
+    """Poll a background negotiation job (used by the detail page)."""
+    from ..services import jobs
+    j = jobs.get_job(job_id)
+    return jsonify({"status": j.get("status", "unknown"),
+                    "engine": j.get("engine"), "agreed": j.get("agreed")})
 
 
 @bp.route("/<int:req_id>/edit", methods=["GET", "POST"])
@@ -278,8 +289,9 @@ def recommend(req_id):
 
 @bp.route("/<int:req_id>/negotiate", methods=["POST"])
 def negotiate_vendor(req_id):
-    """W5 NEGOTIATE — run the agent-vs-agent negotiation on the recommended (or
-    chosen) vendor and persist the outcome for the guardrail + ledger."""
+    """W5 NEGOTIATE — run the (live agent-to-agent) negotiation in the background
+    and let the detail page poll for the result, so a slow live model never hangs
+    the browser."""
     req = ProcurementRequest.query.get_or_404(req_id)
     vid = flask_request.form.get("vendor_id")
     vendor = None
@@ -290,16 +302,25 @@ def negotiate_vendor(req_id):
         flash("Recommend or add a vendor before negotiating.", "warning")
         return redirect(url_for("procurement.detail", req_id=req.id))
 
-    result = negotiation.negotiate(vendor.name, vendor.price)
+    from ..services import hermes_client, jobs
+    live = (hermes_client.is_live()
+            and current_app.config.get("PROCUREMENT_NEGOTIATE_HERMES", True))
+    if live:
+        # Live agent-to-agent can take ~30–90s — run it in the background and let
+        # the detail page poll, so the browser never hangs.
+        job_id = jobs.start_negotiation_job(current_app._get_current_object(), vendor.id)
+        flash(f"Negotiation started — the Aegis buyer agent and the {vendor.name} "
+              f"seller agent are negotiating live. This page updates automatically "
+              f"when they settle.", "info")
+        return redirect(url_for("procurement.detail", req_id=req.id, nego_job=job_id))
+
+    # Offline / deterministic — instant, run synchronously.
+    result = negotiation.negotiate(vendor.name, vendor.price, live=False)
     vendor.negotiation = result
     db.session.commit()
-
     if result["agreed"]:
-        flash(
-            f"Negotiated with {vendor.name}: agreed ${result['agreed_amount']:,.0f} "
-            f"(saved ${result['savings']:,.0f}, {result['savings_pct']}%).",
-            "success",
-        )
+        flash(f"Negotiated with {vendor.name}: agreed ${result['agreed_amount']:,.0f} "
+              f"(saved ${result['savings']:,.0f}, {result['savings_pct']}%).", "success")
     else:
         flash(f"Negotiation with {vendor.name}: no agreement — keeping current terms.",
               "warning")

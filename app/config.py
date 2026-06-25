@@ -94,3 +94,8 @@ class Config:
     # comparative narrative is the default + fallback).
     PROCUREMENT_EVAL_HERMES = os.environ.get(
         "PROCUREMENT_EVAL_HERMES", "").lower() in ("1", "true", "yes")
+    # NEGOTIATE: real two-agent (live Hermes seller vs Aegis buyer) negotiation
+    # when Hermes is reachable. On by default; falls back to the deterministic
+    # protocol offline or on any live failure.
+    PROCUREMENT_NEGOTIATE_HERMES = os.environ.get(
+        "PROCUREMENT_NEGOTIATE_HERMES", "1").lower() in ("1", "true", "yes", "on")

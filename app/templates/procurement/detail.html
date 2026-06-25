@@ -148,12 +148,33 @@
       </div>
     </div>
 
+    <!-- Live negotiation in progress (background job; this page auto-updates) -->
+    {% if nego_job %}
+    <div class="panel mt-3" id="nego-live"
+         data-job="{{ nego_job }}"
+         data-detail="{{ url_for('procurement.detail', req_id=req.id) }}"
+         data-status="{{ url_for('procurement.negotiation_status', job_id='__JOB__') }}">
+      <div class="panel-body d-flex align-items-center gap-3">
+        <div class="spinner-border text-primary"></div>
+        <div>
+          <strong>Live negotiation in progress…</strong>
+          <div class="small text-muted">The Aegis <em>buyer</em> agent and the vendor
+            <em>seller</em> agent are exchanging real offers on the live model
+            (the seller has a hidden floor it won't reveal). This can take ~30–90s;
+            the page updates automatically when they settle.</div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
     <!-- Negotiation transcript (W5) -->
     {% set nego = req.recommended_vendor.negotiation if req.recommended_vendor else {} %}
     {% if nego %}
     <div class="panel mt-3">
       <div class="panel-head">
-        <h2><i class="bi bi-arrow-left-right"></i> Negotiation — {{ req.recommended_vendor.name }}</h2>
+        <h2><i class="bi bi-arrow-left-right"></i> Negotiation — {{ req.recommended_vendor.name }}
+          {% if nego.engine == 'hermes' %}<span class="badge text-bg-info align-middle"><i class="bi bi-cpu"></i> live agents</span>{% endif %}
+        </h2>
         {% if nego.agreed %}
           <span class="badge text-bg-success">agreed {{ nego.agreed_amount | money }} · saved {{ nego.savings | money }} ({{ nego.savings_pct }}%)</span>
         {% else %}
@@ -211,13 +232,10 @@
           <p class="text-muted">No recommendation yet. Run <strong>3 · Recommend</strong> to score vendors.</p>
         {% endif %}
         {% if req.recommended_vendor %}
-        <form method="post" action="{{ url_for('procurement.negotiate_vendor', req_id=req.id) }}" class="mt-2"
-              data-loading
-              data-loading-title="Negotiating…"
-              data-loading-sub="Running the agent-vs-agent negotiation rounds with the vendor.">
+        <form method="post" action="{{ url_for('procurement.negotiate_vendor', req_id=req.id) }}" class="mt-2">
           <input type="hidden" name="vendor_id" value="{{ req.recommended_vendor.id }}">
           <button class="btn btn-sm btn-outline-primary w-100">
-            <i class="bi bi-arrow-left-right"></i> 4 · Negotiate with {{ req.recommended_vendor.name }}
+            <i class="bi bi-arrow-left-right"></i> 4 · Negotiate (live agents) with {{ req.recommended_vendor.name }}
           </button>
         </form>
         {% endif %}
@@ -248,4 +266,23 @@
     </div>
   </div>
 </div>
+
+{% if nego_job %}
+<script>
+(function () {
+  var el = document.getElementById("nego-live");
+  if (!el) return;
+  var statusUrl = el.dataset.status.replace("__JOB__", el.dataset.job);
+  var detail = el.dataset.detail;
+  var iv = setInterval(function () {
+    fetch(statusUrl).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.status === "done" || d.status === "error" || d.status === "unknown") {
+        clearInterval(iv);
+        window.location.href = detail;   // reload (without nego_job) to show the transcript
+      }
+    }).catch(function () {});
+  }, 3000);
+})();
+</script>
+{% endif %}
 {% endblock %}
