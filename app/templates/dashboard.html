@@ -16,6 +16,42 @@
   </form>
 </div>
 
+<!-- Continuous autonomy loop -->
+<div class="panel mb-3" id="ops-panel" data-status-url="{{ url_for('dashboard.ops_status') }}"
+     data-running="{{ '1' if ops and ops.running else '0' }}">
+  <div class="panel-body">
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+      <div class="d-flex align-items-center gap-2">
+        <span class="badge text-bg-{{ 'success' if ops and ops.running else 'secondary' }}" id="ops-badge">
+          {% if ops and ops.running %}<span class="spinner-grow spinner-grow-sm" style="width:.5rem;height:.5rem;"></span> running{% else %}stopped{% endif %}
+        </span>
+        <strong>Continuous Autonomy</strong>
+        <span class="small text-muted">— the CFO runs the sense → act → record cycle on its own, on and on</span>
+      </div>
+      <div class="d-flex align-items-center gap-3">
+        <span class="small text-muted">cycles <strong id="ops-cycles">{{ ops.cycles if ops else 0 }}</strong>
+          · acted <strong id="ops-actions">{{ ops.actions if ops else 0 }}</strong>
+          · saved <strong id="ops-savings" class="text-success">${{ '{:,.0f}'.format(ops.savings if ops else 0) }}</strong></span>
+        {% if ops and ops.running %}
+        <form method="post" action="{{ url_for('dashboard.ops_stop') }}" class="m-0">
+          <button class="btn btn-sm btn-outline-danger"><i class="bi bi-stop-fill"></i> Stop</button>
+        </form>
+        {% else %}
+        <form method="post" action="{{ url_for('dashboard.ops_start') }}" class="m-0">
+          <input type="hidden" name="interval" value="20">
+          <input type="hidden" name="audit_every" value="0">
+          <button class="btn btn-sm btn-success"><i class="bi bi-play-fill"></i> Start continuous</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+    <ul class="list-unstyled small mt-2 mb-0" id="ops-log"
+        style="max-height:150px;overflow:auto;font-family:var(--bs-font-monospace,monospace);">
+      {% for e in (ops.log if ops else []) %}<li><span class="text-muted">{{ e.ts }}</span> {{ e.msg }}</li>{% endfor %}
+    </ul>
+  </div>
+</div>
+
 <!-- KPI cards -->
 <div class="row g-3 mb-4">
   <div class="col-6 col-xl">
@@ -205,5 +241,27 @@
       }
     });
   }
+</script>
+<script>
+  // Stream the continuous-autonomy panel while it runs.
+  (function () {
+    var panel = document.getElementById("ops-panel");
+    if (!panel || panel.dataset.running !== "1") return;
+    var url = panel.dataset.statusUrl;
+    var cyc = document.getElementById("ops-cycles"),
+        act = document.getElementById("ops-actions"),
+        sav = document.getElementById("ops-savings"),
+        log = document.getElementById("ops-log");
+    setInterval(function () {
+      fetch(url).then(function (r) { return r.json(); }).then(function (s) {
+        if (cyc) cyc.textContent = s.cycles;
+        if (act) act.textContent = s.actions;
+        if (sav) sav.textContent = "$" + Math.round(s.savings || 0).toLocaleString();
+        if (log && s.log) log.innerHTML = s.log.map(function (e) {
+          return '<li><span class="text-muted">' + e.ts + '</span> ' + e.msg + '</li>';
+        }).join("");
+      }).catch(function () {});
+    }, 4000);
+  })();
 </script>
 {% endblock %}

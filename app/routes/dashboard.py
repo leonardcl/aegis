@@ -1,7 +1,8 @@
 """Dashboard command center blueprint."""
 from datetime import datetime
 
-from flask import Blueprint, flash, jsonify, redirect, render_template, url_for
+from flask import (Blueprint, current_app, flash, jsonify, redirect,
+                   render_template, request, url_for)
 
 from ..extensions import db
 from ..models import ApprovalRequest, AuditReport, ProcurementRequest
@@ -79,6 +80,7 @@ def index():
         "compliance_result": report.compliance_replay_result if report else "—",
     }
 
+    from ..services import operations
     return render_template(
         "dashboard.html",
         kpis=kpis,
@@ -87,6 +89,7 @@ def index():
         urgent=urgent,
         guardrail_summary=guardrail_summary,
         spend_chart=spend_chart,
+        ops=operations.status(),
         active_page="dashboard",
     )
 
@@ -113,6 +116,40 @@ def run_daily_review():
         flash(f"{len(result['blocked'])} proposed action(s) were blocked by the "
               f"guardrail.", "danger")
     return redirect(url_for("dashboard.index"))
+
+
+@bp.route("/ops/start", methods=["POST"])
+def ops_start():
+    """Start the continuous autonomy loop — the CFO runs on its own from here."""
+    from ..services import operations
+    interval = request.form.get("interval", 60)
+    audit_every = request.form.get("audit_every", 0)
+    try:
+        interval, audit_every = int(interval or 60), int(audit_every or 0)
+    except (TypeError, ValueError):
+        interval, audit_every = 60, 0
+    started = operations.start(current_app._get_current_object(),
+                               interval=interval, audit_every=audit_every)
+    flash("Continuous autonomy started — the CFO is now running on its own; the "
+          "panel updates live." if started else
+          "Continuous autonomy is already running.",
+          "success" if started else "info")
+    return redirect(url_for("dashboard.index"))
+
+
+@bp.route("/ops/stop", methods=["POST"])
+def ops_stop():
+    from ..services import operations
+    operations.stop()
+    flash("Continuous autonomy stopped.", "info")
+    return redirect(url_for("dashboard.index"))
+
+
+@bp.route("/ops/status")
+def ops_status():
+    """Poll endpoint for the continuous-autonomy panel."""
+    from ..services import operations
+    return jsonify(operations.status())
 
 
 def _spend_trend():
