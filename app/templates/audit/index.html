@@ -20,6 +20,26 @@
   </form>
 </div>
 
+<!-- Interactive: inject a live external event the audit will reconcile against -->
+<div class="panel mb-3">
+  <div class="panel-body d-flex flex-wrap align-items-center gap-2">
+    <span class="small text-muted me-2"><i class="bi bi-lightning-charge"></i>
+      Live data — inject an actual external Stripe charge (no ledger entry) and the
+      next audit catches it for real:</span>
+    <form method="post" action="{{ url_for('audit.inject_event') }}" class="d-flex align-items-center gap-2 m-0">
+      <input name="payee" class="form-control form-control-sm" style="width:11rem" placeholder="payee (e.g. shadow-saas.io)">
+      <input name="amount" class="form-control form-control-sm" style="width:7rem" placeholder="$ amount">
+      <button class="btn btn-sm btn-outline-warning"><i class="bi bi-plus-circle"></i> Inject rogue charge</button>
+    </form>
+    {% if injected_count %}
+    <span class="badge text-bg-warning">{{ injected_count }} live event(s) pending audit</span>
+    <form method="post" action="{{ url_for('audit.reset_events') }}" class="m-0">
+      <button class="btn btn-sm btn-outline-secondary">Reset</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
 {% if running_job %}
 <div id="council-status" class="alert alert-info d-flex align-items-center gap-2"
      data-job="{{ running_job }}" data-status-url="{{ url_for('audit.status', job_id=running_job) }}">

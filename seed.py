@@ -27,6 +27,9 @@ def run():
         # Reset
         db.drop_all()
         db.create_all()
+        # Clear any interactively-injected live audit events from a prior session.
+        from app.services import stripe_source
+        stripe_source.clear_injected()
 
         now = datetime.utcnow()
         today = date.today()

@@ -16,12 +16,66 @@ failure modes AUDIT-FLOW.md calls out so the audit has something to catch:
 Each charge is keyed by ``transaction_id`` so it can be joined to
 ``LedgerEntry.transaction_id``.
 """
+import json
 import os
 from datetime import datetime, timedelta
 
 
 def _now():
     return datetime.utcnow()
+
+
+# --------------------------------------------------------------------------- #
+# Interactive live events — user-injected external (Stripe-side) charges that
+# have NO ledger entry, so the audit's Reconciler catches them live as rogue
+# charges on the next run. Persisted to instance/injected_charges.json so they
+# survive across requests/restarts (cleared by seed.py / the Reset button).
+# --------------------------------------------------------------------------- #
+def _injected_path():
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    return os.path.join(repo, "instance", "injected_charges.json")
+
+
+def load_injected():
+    try:
+        with open(_injected_path()) as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def inject_charge(payee, amount, transaction_id=None, days_ago=1):
+    """Record a live external charge with no ledger twin → a rogue 'stripe_only'
+    exception the next audit will catch. Returns the transaction id."""
+    items = load_injected()
+    tid = transaction_id or f"txn_live_{len(items) + 1:03d}"
+    items.append({"transaction_id": tid, "payee": payee or "unknown-vendor.io",
+                  "amount": float(amount or 0.0), "days_ago": int(days_ago),
+                  "status": "succeeded"})
+    path = _injected_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(items, f)
+    return tid
+
+
+def clear_injected():
+    try:
+        os.remove(_injected_path())
+    except OSError:
+        pass
+
+
+def _injected_charges(now, cutoff):
+    out = []
+    for c in load_injected():
+        created = now - timedelta(days=int(c.get("days_ago", 1)))
+        if created >= cutoff:
+            out.append({"transaction_id": c["transaction_id"], "payee": c["payee"],
+                        "amount": float(c.get("amount", 0.0)),
+                        "created_at": created, "status": c.get("status", "succeeded")})
+    return out
 
 
 def _stripe_live_enabled():
@@ -97,7 +151,7 @@ def get_charges(period_days=30):
     ]
     cutoff = now - timedelta(days=period_days)
     seeded = [c for c in charges if c["created_at"] >= cutoff]
-    return seeded + _aegis_confirmed_charges(cutoff)
+    return seeded + _aegis_confirmed_charges(cutoff) + _injected_charges(now, cutoff)
 
 
 def _aegis_confirmed_charges(cutoff):
