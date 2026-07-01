@@ -1,35 +1,88 @@
-# Aegis CFO
+# 🛡️ AEGIS — the Autonomous CFO Agent
 
-**An autonomous AI back-office that monitors spend, runs procurement, audits its
-own books — and physically cannot exceed the financial mandate you give it.**
+> **What if your CFO never slept — and never went rogue?**
 
-Every dollar it moves passes a deterministic, default-deny guardrail it can't
+Built for the **Hermes Agent Accelerated Business Hackathon** (Stripe × NVIDIA ×
+Nous Research), AEGIS is an agent that doesn't just *advise* on finance — it
+**runs it, end to end**, with real spending power and hard safety rails.
+
+Every dollar it moves passes a deterministic, default-deny guardrail it cannot
 override. The thesis: *the agent isn't the hard part anymore — trusting it with a
-credit card is.* Aegis solves trust.
+credit card is.* **AEGIS solves trust.**
 
-> **Principle: constrain actions, free cognition.** The agent reasons, remembers
-> and self-improves without limit; only its *effects on the world* (moving money)
-> are gated. A smarter agent inside a sound action-boundary is the goal.
+---
 
-Built for the Hermes Agent Accelerated Business Hackathon (NVIDIA × Stripe × Nous
-Research) with Flask · SQLAlchemy · Bootstrap 5 · Chart.js.
+## 💼 What it does
+
+**Procurement — it acts.**
+Describe a need and AEGIS searches live vendors, scores every option, and
+negotiates the price. Then, using **Stripe Skills**, it can actually buy what it
+needs, provision its own SaaS, and pay for the services it uses — no human
+copy-pasting card details. *Guardrail:* anything above your threshold stops for
+human approval. Every time.
+
+**Audit — it protects.**
+A **5-persona audit council** reconciles your books against Stripe transaction
+data in real time. In testing it caught a rogue charge and an overbill that a
+human had missed — flagged automatically, with the receipts.
+
+**Autonomy — it runs on its own.**
+A one-click "daily review" ingests usage + credit data, flags zero-usage
+subscriptions (cancel → savings) and credits about to run dry (top-up), runs each
+through the **same** guardrail, and auto-executes only what the guardrail
+`ALLOW`s — recording every action and the realized savings to an append-only
+ledger.
+
+---
+
+## ⚙️ How it's built
+
+- 🧠 **Cognition** — Hermes agent reasoning on **NVIDIA Nemotron** for fast,
+  capable decision-making.
+- 🛡️ **Safety** — **NVIDIA NeMo** guardrails keep the agent's actions inside the
+  limits you define.
+- 🚀 **Capabilities** — **NVIDIA Agent Skills / CUDA-X** for horsepower +
+  **Stripe Skills** for real spending, SaaS provisioning, and payments.
+
+Stack: **Flask · Jinja2 · Bootstrap 5 · SQLAlchemy · SQLite · Chart.js ·
+Gunicorn** · Nous Hermes (Nemotron) via an OpenAI-compatible gateway.
+
+---
+
+## 🔑 The thesis
+
+> **Constrain actions. Free cognition.**
+
+Nemotron lets it *think* without limits. NeMo guardrails and human-approval gates
+lock down what it's *allowed to do*. Stripe Skills give it a real wallet — on a
+leash you control. A smarter agent inside a sound action-boundary is the goal.
+
+---
+
+## 🔗 Links
+
+- 🎥 **Demo:** https://x.com/leonardchr88298/status/2072116761630212549
+- 💻 **Code:** https://github.com/leonardcl/aegis
+- 🚀 **Live app:** https://underground-cancellation-rabbit-adapted.trycloudflare.com/procurement/
+  · user: `cfo` · pass: `1o-C1OJFVr1zY1vP`
+
+*Feedback welcome 👇*
 
 ---
 
 ## What it actually does (not mocked)
 
-- **Live multi-agent Audit Council.** Real **Nous Hermes / Nemotron-3** (via the
+- **Live multi-agent Audit Council.** Real **Nous Hermes / Nemotron** (via the
   Hermes gateway) convenes five expert voices — Reconciler, Compliance Officer,
   Period Analyst, Cost Advisor, Lead Auditor — over a deterministic 7-step audit
-  engine. The *numbers* are computed by rules (the model can't fabricate them); the
-  agents reason and decide escalation. Runs end-to-end live in well under two
+  engine. The *numbers* are computed by rules (the model can't fabricate them);
+  the agents reason and decide escalation. Runs end-to-end live in well under two
   minutes, and degrades gracefully to a deterministic local reasoner if the model
   is unreachable, so the dashboard always produces a real result.
 - **Autonomous "daily review" hero loop.** The agent ingests usage + credit data,
-  flags zero-usage subscriptions (cancel → savings) and credits about to run dry
-  (top-up), runs each through the **same** guardrail, and auto-executes only what
-  the guardrail ALLOWs — recording every action and the realized savings to an
-  append-only ledger. One click: *agent finds and fixes waste on its own.*
+  flags zero-usage subscriptions and credits about to run dry, runs each through
+  the **same** guardrail, and auto-executes only what the guardrail `ALLOW`s —
+  recording every action and the realized savings to an append-only ledger.
 - **The guardrail (the centerpiece).** A deterministic spend gate enforces a
   payee allowlist (default-deny → unlisted payees need human vetting), a
   per-transaction cap, daily/monthly budgets (read from the ledger), an
@@ -45,11 +98,6 @@ Research) with Flask · SQLAlchemy · Bootstrap 5 · Chart.js.
   approvals.
 - **Floating Hermes chatbot** on every page, with identity hygiene (never leaks
   its model/platform) and a fast-failing timeout.
-
-## Tech stack
-
-Flask · Jinja2 · Bootstrap 5 · SQLAlchemy · SQLite · Chart.js · Gunicorn ·
-Nous Hermes (Nemotron-3) via an OpenAI-compatible gateway.
 
 ## Quickstart
 
@@ -108,14 +156,14 @@ aegis-cfo/
 │   ├── data/usage_feed.json  # mock usage feed for the daily review
 │   ├── templates/  └─ static/
 ├── hermes/                   # SKILL.md + tool manifests for the sandboxed agent
-├── tests/                    # 94 tests (offline / deterministic)
+├── tests/                    # offline / deterministic
 ├── seed.py · run.py · Dockerfile · ROADMAP.md
 ```
 
 ## Tests
 
 ```bash
-HERMES_API_URL="" pytest -q        # 94 tests, fully offline/deterministic
+HERMES_API_URL="" pytest -q        # fully offline / deterministic
 ```
 
 ## Docs
