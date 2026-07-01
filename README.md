@@ -47,6 +47,42 @@ ledger.
 Stack: **Flask · Jinja2 · Bootstrap 5 · SQLAlchemy · SQLite · Chart.js ·
 Gunicorn** · Nous Hermes (Nemotron) via an OpenAI-compatible gateway.
 
+### 🔬 Under the hood — how each piece is actually wired
+
+**🧠 Nous Hermes on NVIDIA Nemotron — the cognition.**
+The reasoning model is `nvidia/nemotron-3-super-120b-a12b`, reached through the
+Hermes gateway over an OpenAI-compatible `/v1` API (`app/services/hermes_client.py`,
+model set in `app/config.py:HERMES_MODEL`). It drives two things: the **5-persona
+audit council** (`hermes_council.py` — each persona is a separate model call with
+its own system prompt, then a lead auditor synthesizes) and the **floating
+chatbot** (`hermes_service.py` + `hermes_tools.py`, a tool-using loop). Crucially,
+the *numbers* are never invented by the model — a deterministic 7-step engine
+(`audit_engine.py`) computes them; the model only *reasons and decides escalation*.
+If the gateway is unreachable, everything degrades to a deterministic local
+reasoner so the app always returns a real answer — never a blank screen.
+
+**🛡️ NVIDIA NeMo-style guardrails — the safety boundary.**
+The centerpiece is a **deterministic, default-deny spend gate**
+(`agent_guardrail.py` / `guardrail_service.py`) that sits *out of process* from the
+model. The agent's mandate lives in `agent-cfo.policy.yaml` — payee allowlist,
+per-transaction cap, daily/monthly budgets, an auto-approve threshold, and a
+blocklist. Every money-moving action the agent proposes is scored to
+`ALLOW` / `NEEDS_APPROVAL` / `BLOCK` **before** it can execute. The model can
+*propose* a policy edit but can never apply one — the boundary is enforced in code
+the agent can't reach. This is the NeMo principle in practice: *the reasoning is
+free; only the effects on the world are gated.*
+
+**🚀 Stripe — the real wallet + the ground truth.**
+Stripe is the source of financial truth the agent reconciles against
+(`app/services/stripe_source.py`). Set `STRIPE_LIVE=1` and
+`STRIPE_SECRET_KEY=sk_test_...` and the audit council pulls **real Stripe
+test-mode charges** (`stripe.Charge.list(...)`) and reconciles them line-by-line
+against the append-only ledger — catching rogue charges, amount mismatches, and
+spends missing an approval. With no key it falls back to a deterministic mock, so
+the demo runs anywhere with zero setup. Spend actions the guardrail `ALLOW`s are
+executed and recorded to the ledger, then verified back against Stripe on the next
+audit — the loop that lets the agent hold a card without going rogue.
+
 ---
 
 ## 🔑 The thesis
