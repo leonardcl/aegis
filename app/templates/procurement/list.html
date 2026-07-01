@@ -13,32 +13,32 @@
   </a>
 </div>
 
-<!-- W1 INTAKE: natural-language need -> requirement spec -->
+<!-- AUTOPILOT: one action — the CFO researches, scores, recommends & negotiates -->
 <div class="panel mt-3">
-  <div class="panel-head"><h2><i class="bi bi-magic"></i> Describe a need</h2></div>
+  <div class="panel-head"><h2><i class="bi bi-magic"></i> Tell the CFO what you need</h2></div>
   <div class="panel-body">
-    <form method="post" action="{{ url_for('procurement.intake_need') }}" class="row g-2 align-items-end"
-          data-loading
-          data-loading-title="Parsing your need…"
-          data-loading-sub="Building a requirement spec — budget, deadline, must-haves and priority weights."
-          data-loading-sub-hermes="Hermes is reading your request… this can take 30–40s (single-threaded model). Please keep this tab open.">
-      <div class="col-lg-9">
-        <label class="form-label small">Tell Hermes what you want to buy</label>
+    <form method="post" action="{{ url_for('procurement.autopilot_start') }}" class="row g-2 align-items-end">
+      <div class="col-lg-8">
+        <label class="form-label small">Describe it in plain words — autopilot does the rest</label>
         <input name="need" class="form-control"
-               placeholder="e.g. I need a transcription API under $300/mo with English and Indonesian and speaker diarization, live in 2 weeks"
+               placeholder="e.g. I need an industrial 6-axis robot arm, payload 10kg, budget $25,000, delivered in 6 weeks"
                required>
       </div>
-      <div class="col-lg-3 d-flex gap-2">
-        <div class="form-check align-self-center">
-          <input class="form-check-input" type="checkbox" name="use_hermes" value="1" id="useHermes">
-          <label class="form-check-label small" for="useHermes">Use Hermes</label>
+      <div class="col-lg-4 d-flex gap-2 align-items-center">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" name="use_hermes" value="1" id="useHermes" checked>
+          <label class="form-check-label small" for="useHermes" title="Real web search + live negotiation via Hermes">Live (Hermes)</label>
         </div>
-        <button class="btn btn-primary flex-grow-1"><i class="bi bi-stars"></i> Parse need</button>
+        <button class="btn btn-primary flex-grow-1"><i class="bi bi-stars"></i> Run autopilot</button>
+        <button class="btn btn-outline-secondary"
+                formaction="{{ url_for('procurement.intake_need') }}"
+                title="Build a requirement spec without running discovery/negotiation">Parse only</button>
       </div>
     </form>
     <p class="text-muted small mb-0 mt-2">
-      Parses budget, quantity, deadline, must-haves and priority weights into a
-      requirement spec. Leave “Use Hermes” off for the instant deterministic parse.
+      Autopilot researches real vendors on the web, validates every link, scores
+      and recommends the best fit, decides whether it's worth negotiating, and
+      negotiates if so — you review only the result.
     </p>
   </div>
 </div>

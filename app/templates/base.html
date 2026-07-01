@@ -15,8 +15,11 @@
   <!-- Sidebar -->
   <aside class="sidebar">
     <div class="sidebar-brand">
-      <i class="bi bi-shield-lock-fill"></i>
-      <span>Aegis <strong>CFO</strong></span>
+      <span class="brand-mark"><i class="bi bi-shield-lock-fill"></i></span>
+      <span class="brand-word">
+        <span class="brand-name">AEGIS <strong>CFO</strong></span>
+        <span class="brand-tag">Mandate-bound autonomy</span>
+      </span>
     </div>
     <nav class="sidebar-nav">
       <a href="{{ url_for('dashboard.index') }}"
@@ -35,9 +38,26 @@
          class="nav-link {{ 'active' if active_page == 'audit' }}">
         <i class="bi bi-journal-text"></i> Audit &amp; Ledger
       </a>
+      <a href="{{ url_for('dashboard.about') }}"
+         class="nav-link {{ 'active' if active_page == 'about' }}">
+        <i class="bi bi-patch-question"></i> About Aegis
+      </a>
     </nav>
-    <div class="sidebar-footer">
-      <i class="bi bi-robot"></i> Hermes Agent online
+    <div class="sidebar-footer" id="sys-footer">
+      <div class="sf-row">
+        <span class="live-dot" id="sf-hermes-dot"></span>
+        <span class="sf-label">Hermes</span>
+        <span class="sf-val" id="sf-hermes-val">checking…</span>
+      </div>
+      <div class="sf-row">
+        <span class="live-dot" id="sf-db-dot"></span>
+        <span class="sf-label">Database</span>
+        <span class="sf-val" id="sf-db-val">checking…</span>
+      </div>
+      <div class="sf-row">
+        <span class="sf-label">Model</span>
+        <span class="sf-val" id="sf-model-val">nemotron-3-super</span>
+      </div>
     </div>
   </aside>
 
@@ -49,6 +69,16 @@
         <span class="topbar-sub">{% block subtitle %}Procurement &amp; Audit Command Center{% endblock %}</span>
       </div>
       <div class="topbar-right">
+        <div class="sys-status" id="sys-status" title="Live platform telemetry — polled from /healthz">
+          <span class="sys-chip is-unknown" id="chip-hermes">
+            <span class="live-dot" id="chip-hermes-dot"></span>
+            <span class="sys-k">Hermes</span><span class="sys-v" id="chip-hermes-v">—</span>
+          </span>
+          <span class="sys-chip is-unknown" id="chip-db">
+            <span class="live-dot" id="chip-db-dot"></span>
+            <span class="sys-k">DB</span><span class="sys-v" id="chip-db-v">—</span>
+          </span>
+        </div>
         <span class="badge rounded-pill text-bg-light"><i class="bi bi-person-circle"></i> Management</span>
       </div>
     </header>
@@ -77,7 +107,10 @@
 
 <div id="hermes-panel" class="hermes-panel" hidden>
   <div class="hermes-header">
-    <span><i class="bi bi-robot"></i> Hermes Agent</span>
+    <span>
+      <i class="bi bi-robot"></i> Hermes Agent
+      <span class="hermes-header-sub" id="hermes-header-sub">Nemotron · audit · procurement · guardrail</span>
+    </span>
     <button id="hermes-close" class="hermes-close" aria-label="Close">&times;</button>
   </div>
   <div id="hermes-messages" class="hermes-messages">
@@ -106,6 +139,7 @@
 <script>
   window.AEGIS = {
     chatUrl: "{{ url_for('agent.chat') }}",
+    healthUrl: "{{ url_for('dashboard.healthz') }}",
     page: "{{ active_page or '' }}"
   };
 </script>

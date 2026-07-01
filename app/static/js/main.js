@@ -45,3 +45,55 @@
   // so a spinner from a previous navigation never gets stuck on screen.
   window.addEventListener("pageshow", () => { overlay.hidden = true; });
 })();
+
+// Live platform telemetry — polls /healthz and reflects real system state in the
+// topbar chips and sidebar footer. Honest: "live" means the model server actually
+// answered a reachability probe, not just that a URL is configured.
+(function () {
+  var url = (window.AEGIS && window.AEGIS.healthUrl);
+  if (!url) return;
+
+  function setDot(el, state) {            // state: "up" | "down" | "warn"
+    if (!el) return;
+    el.classList.remove("up", "down", "warn");
+    el.classList.add(state);
+  }
+  function setChip(chip, ok) {
+    if (!chip) return;
+    chip.classList.toggle("is-unknown", ok === null);
+  }
+  function txt(id, v) { var e = document.getElementById(id); if (e) e.textContent = v; }
+
+  function paint(h) {
+    var hermesUp = !!(h && h.hermes_live);
+    var hermesConf = !!(h && h.hermes_configured);
+    var dbUp = !!(h && h.db);
+
+    // Hermes: live (reachable) > configured-but-unreachable (warn) > off
+    var hState = hermesUp ? "up" : (hermesConf ? "warn" : "down");
+    var hLabel = hermesUp ? "live" : (hermesConf ? "unreachable" : "local");
+    setDot(document.getElementById("chip-hermes-dot"), hState);
+    setChip(document.getElementById("chip-hermes"), hState !== "down" ? true : false);
+    txt("chip-hermes-v", hLabel);
+    setDot(document.getElementById("sf-hermes-dot"), hState);
+    txt("sf-hermes-val", hLabel);
+
+    setDot(document.getElementById("chip-db-dot"), dbUp ? "up" : "down");
+    setChip(document.getElementById("chip-db"), dbUp ? true : false);
+    txt("chip-db-v", dbUp ? "ok" : "down");
+    setDot(document.getElementById("sf-db-dot"), dbUp ? "up" : "down");
+    txt("sf-db-val", dbUp ? "connected" : "down");
+  }
+
+  function poll() {
+    fetch(url, { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(paint)
+      .catch(function () {
+        setDot(document.getElementById("chip-hermes-dot"), "down");
+        setDot(document.getElementById("chip-db-dot"), "down");
+      });
+  }
+  poll();
+  setInterval(poll, 15000);
+})();

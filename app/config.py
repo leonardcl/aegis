@@ -1,10 +1,33 @@
 """Application configuration."""
+import logging
 import os
+import secrets
 
 from dotenv import load_dotenv
 
+logger = logging.getLogger(__name__)
+
 basedir = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 instance_dir = os.path.join(basedir, "instance")
+
+
+def _env_num(name, default, cast=int):
+    """Read a numeric env var, coercing safely.
+
+    A non-numeric (or empty) value must never crash startup: we log a warning
+    and fall back to the documented default instead of letting ``int()``/
+    ``float()`` raise ``ValueError`` at import time.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return cast(default)
+    try:
+        return cast(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid numeric env %s=%r; falling back to default %r",
+            name, raw, default)
+        return cast(default)
 
 # Load the project .env into the environment BEFORE the Config class reads it.
 # Without this, HERMES_API_URL (and the rest) are only set when the launching
@@ -16,7 +39,25 @@ load_dotenv(os.path.join(basedir, ".env"), override=False)
 
 
 class Config:
-    SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-me")
+    # Never ship a known constant key. If SECRET_KEY is unset we generate a
+    # random per-process key (sessions simply don't survive a restart) — strictly
+    # safer than a hardcoded default that an attacker could use to forge sessions.
+    SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+    SECRET_KEY_IS_EPHEMERAL = not bool(os.environ.get("SECRET_KEY"))
+
+    # --- Development guardrail bypass ------------------------------------- #
+    # GUARDRAILS_DISABLED=1 makes the spend gate return ALLOW ("dev_bypass") and
+    # skips output screening, for frictionless development. Defaults OFF; it lives
+    # nowhere in .env, surfaces a loud "dev_bypass" rule in the ledger/approvals
+    # UI, and logs a startup warning — so an enabled bypass can never hide. The
+    # self-modification BLOCK (edit_policy/raise_cap/...) stays denied even here.
+    GUARDRAILS_DISABLED = os.environ.get("GUARDRAILS_DISABLED", "").lower() in (
+        "1", "true", "yes", "on")
+
+    # Optional shared-credential HTTP Basic Auth over the whole UI, for guarding a
+    # publicly-exposed demo. Format "user:password" (or just "password"). OFF when
+    # unset — so it never adds friction to local dev or the test client.
+    BASIC_AUTH = os.environ.get("AEGIS_BASIC_AUTH", "")
 
     _db_url = os.environ.get("DATABASE_URL")
     if _db_url:
@@ -32,9 +73,13 @@ class Config:
     HERMES_API_URL = os.environ.get("HERMES_API_URL", "")
     HERMES_API_KEY = os.environ.get("HERMES_API_KEY", "")
     HERMES_MODEL = os.environ.get("HERMES_MODEL", "nvidia/nemotron-3-super-120b-a12b")
-    HERMES_TIMEOUT = int(os.environ.get("HERMES_TIMEOUT", "90"))
+    HERMES_TIMEOUT = _env_num("HERMES_TIMEOUT", 90)
+    # Shorter timeout for the interactive chatbot so a question issued while the
+    # (serialized) model is busy with a council call fails fast instead of hanging
+    # the panel. The client also aborts a little after this.
+    HERMES_CHAT_TIMEOUT = _env_num("HERMES_CHAT_TIMEOUT", 30)
     # Max tokens per Hermes reasoning turn (tool-augmented mode).
-    HERMES_MAX_TOKENS = int(os.environ.get("HERMES_MAX_TOKENS", "400"))
+    HERMES_MAX_TOKENS = _env_num("HERMES_MAX_TOKENS", 400)
 
     # Audit council deliberation strategy:
     #   "oneshot"    — one Hermes call produces all five voices (~5x fewer calls,
@@ -45,12 +90,11 @@ class Config:
     #   "auto"       — oneshot when live, sequential when offline.
     HERMES_COUNCIL_STRATEGY = os.environ.get("HERMES_COUNCIL_STRATEGY", "auto")
     # Token budget for the single one-shot council call (five sections need room).
-    HERMES_COUNCIL_MAX_TOKENS = int(
-        os.environ.get("HERMES_COUNCIL_MAX_TOKENS", "1600"))
+    HERMES_COUNCIL_MAX_TOKENS = _env_num("HERMES_COUNCIL_MAX_TOKENS", 1600)
     # The one-shot call does the work of five persona calls, so it needs a larger
     # timeout than a single turn. Safe: the council runs in a background thread
     # (the HTTP request already returned), bounded only by this value.
-    HERMES_COUNCIL_TIMEOUT = int(os.environ.get("HERMES_COUNCIL_TIMEOUT", "300"))
+    HERMES_COUNCIL_TIMEOUT = _env_num("HERMES_COUNCIL_TIMEOUT", 300)
     # This Hermes build hangs on the OpenAI `tools` param; keep native off and use
     # tool-augmented mode (run tools server-side, inject results, real reasoning).
     HERMES_NATIVE_TOOLS = os.environ.get("HERMES_NATIVE_TOOLS", "")
@@ -66,8 +110,28 @@ class Config:
     # DISCOVER: "seed" (curated, deterministic, demo-safe) or "live"
     # (model-suggested candidates, falls back to seed on any failure).
     PROCUREMENT_DISCOVERY_MODE = os.environ.get("PROCUREMENT_DISCOVERY_MODE", "seed")
-    PROCUREMENT_DISCOVERY_LIMIT = int(os.environ.get("PROCUREMENT_DISCOVERY_LIMIT", "4"))
+    PROCUREMENT_DISCOVERY_LIMIT = _env_num("PROCUREMENT_DISCOVERY_LIMIT", 4)
     # EVALUATE: let Hermes write the recommendation narrative (deterministic
     # comparative narrative is the default + fallback).
     PROCUREMENT_EVAL_HERMES = os.environ.get(
         "PROCUREMENT_EVAL_HERMES", "").lower() in ("1", "true", "yes")
+    # NEGOTIATE: real two-agent (live Hermes seller vs Aegis buyer) negotiation
+    # when Hermes is reachable. On by default; falls back to the deterministic
+    # protocol offline or on any live failure.
+    PROCUREMENT_NEGOTIATE_HERMES = os.environ.get(
+        "PROCUREMENT_NEGOTIATE_HERMES", "1").lower() in ("1", "true", "yes", "on")
+
+    # Grounded discovery (real web search + link validation). The model's URLs
+    # are validated for liveness; dead links are dropped. Wall-clock + count caps
+    # keep the background autopilot bounded.
+    PROCUREMENT_VALIDATE_TIMEOUT = _env_num("PROCUREMENT_VALIDATE_TIMEOUT", 6)
+    PROCUREMENT_VALIDATE_MAX = _env_num("PROCUREMENT_VALIDATE_MAX", 12)
+    # Overall wall-clock budget for one autopilot run (background thread).
+    PROCUREMENT_AUTOPILOT_DEADLINE_S = _env_num("PROCUREMENT_AUTOPILOT_DEADLINE_S", 240)
+
+    # NEGOTIABILITY thresholds — decide IF a quote is worth negotiating before
+    # spending a (slow) model turn. All USD; see services/negotiability.py.
+    PROCUREMENT_NEG_RECURRING_MIN = _env_num("PROCUREMENT_NEG_RECURRING_MIN", 150, float)
+    PROCUREMENT_NEG_ONETIME_MIN = _env_num("PROCUREMENT_NEG_ONETIME_MIN", 2000, float)
+    PROCUREMENT_NEG_USAGE_MIN = _env_num("PROCUREMENT_NEG_USAGE_MIN", 1000, float)
+    PROCUREMENT_NEG_MIN_TICKET = _env_num("PROCUREMENT_NEG_MIN_TICKET", 100, float)

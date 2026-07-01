@@ -4,16 +4,110 @@ Decides whether a procurement spend can proceed automatically, needs human
 approval, or must be blocked outright. This is intentionally simple and
 deterministic so the demo clearly shows the agent cannot spend freely.
 """
-from datetime import datetime
+import os
+from datetime import date, datetime
+
+from flask import current_app
 
 from ..extensions import db
 from ..models import ApprovalRequest, LedgerEntry
 
-# Policy thresholds
-AUTO_APPROVE_LIMIT = 5_000      # below this, ALLOW
-HUMAN_APPROVAL_LIMIT = 50_000   # below this, NEEDS_APPROVAL; at/above, BLOCK
+# --------------------------------------------------------------------------- #
+# Policy thresholds — the deterministic spend boundary.
+#
+# Source of truth is the out-of-process policy file ``agent-cfo.policy.yaml`` at
+# the repo root (the agent may *propose* edits, never apply them). Precedence:
+#   built-in defaults  <  agent-cfo.policy.yaml  <  AEGIS_* environment vars.
+# This is the NemoClaw-style "config the agent can't touch" boundary made real.
+# --------------------------------------------------------------------------- #
+_POLICY_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    "agent-cfo.policy.yaml")
 
-BLOCKED_PAYEES = {"unverified vendor", "sanctioned ltd"}
+
+def _load_policy_file():
+    """Load agent-cfo.policy.yaml if present; {} on any error (defaults apply)."""
+    try:
+        import yaml
+        with open(_POLICY_FILE) as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+
+_FILE = _load_policy_file()
+_SPEND = _FILE.get("spend") or {}
+_PAYEES = _FILE.get("payees") or {}
+
+
+def _num(env_name, file_key, default):
+    """Resolve a numeric limit: env override, else policy file, else default."""
+    raw = os.environ.get(env_name)
+    val = raw if (raw not in (None, "")) else _SPEND.get(file_key, default)
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+AUTO_APPROVE_LIMIT = _num("AEGIS_AUTO_APPROVE_LIMIT", "auto_approve_limit", 5_000)   # <= -> ALLOW
+PER_TRANSACTION_CAP = _num("AEGIS_PER_TRANSACTION_CAP", "per_transaction_max", 50_000)  # >= -> BLOCK
+DAILY_BUDGET = _num("AEGIS_DAILY_BUDGET", "daily_budget", 100_000)                   # over -> NEEDS_APPROVAL
+MONTHLY_BUDGET = _num("AEGIS_MONTHLY_BUDGET", "monthly_budget", 250_000)             # over -> BLOCK
+# Back-compat alias (the per-transaction cap is the hard spend ceiling).
+HUMAN_APPROVAL_LIMIT = PER_TRANSACTION_CAP
+
+# Default-deny allowlist: the company's *vetted* payees, eligible for automatic
+# payment (subject to cap + budget + approval threshold). A payee that is not on
+# the allowlist and not blocked is treated as a NEW payee and routed to human
+# approval for vetting — the agent never autonomously pays a stranger.
+_DEFAULT_ALLOWLIST = {
+    "aws", "nimbuscloud", "atlassian", "github", "slack", "cloudflare",
+    "cloudflare inc", "datavault", "hyperscale", "openai", "anthropic", "nvidia",
+    "vercel", "notion", "stripe", "figma", "zoom", "okta", "snyk", "gitlab",
+    "meridian", "clearaudit", "google cloud", "datadog",
+}
+
+
+def _payee_set(file_list, env_csv):
+    out = {p.strip().lower() for p in (file_list or []) if str(p).strip()}
+    out |= {p.strip().lower() for p in os.environ.get(env_csv, "").split(",") if p.strip()}
+    return out
+
+
+BLOCKED_PAYEES = {"unverified vendor", "sanctioned ltd"} | _payee_set(
+    _PAYEES.get("blocklist"), "AEGIS_BLOCKLIST")
+ALLOWLIST = _DEFAULT_ALLOWLIST | _payee_set(_PAYEES.get("allowlist"), "AEGIS_ALLOWLIST")
+
+_ale = os.environ.get("AEGIS_ALLOWLIST_ENABLED")
+if _ale not in (None, ""):
+    ALLOWLIST_ENABLED = _ale.lower() in ("1", "true", "yes", "on")
+else:
+    ALLOWLIST_ENABLED = bool(_PAYEES.get("deny_unlisted", True))
+
+
+def _posted_spend(window):
+    """Posted-outflow total for budget checks; 0.0 outside a db context."""
+    from . import ledger_service
+    try:
+        # UTC: ledger timestamps are utcnow()-based, so "today"/"this month" must
+        # be measured in UTC too (date.today() is local and drifts a day off
+        # across the UTC boundary).
+        utc_today = datetime.utcnow().date()
+        if window == "day":
+            return ledger_service.today_spend(utc_today)
+        return ledger_service.month_spend(utc_today)
+    except Exception:
+        return 0.0
+
+
+def _guardrails_disabled():
+    """True only when GUARDRAILS_DISABLED is set (dev bypass). Safe outside an
+    app context (returns False)."""
+    try:
+        return bool(current_app.config.get("GUARDRAILS_DISABLED"))
+    except RuntimeError:
+        return False
 
 
 def evaluate_policy(amount, payee="", category=""):
@@ -22,39 +116,85 @@ def evaluate_policy(amount, payee="", category=""):
     Returns:
         dict with keys: decision (ALLOW/NEEDS_APPROVAL/BLOCK), rule, reason.
     """
+    # Development bypass — loud and reversible (see Config.GUARDRAILS_DISABLED).
+    # This single early-return covers both send_to_guardrail and
+    # agent_guardrail.check_action (which delegate here for money actions).
+    if _guardrails_disabled():
+        return {
+            "decision": "ALLOW",
+            "rule": "dev_bypass",
+            "reason": "Guardrails disabled for development (GUARDRAILS_DISABLED).",
+        }
+
+    amount = float(amount or 0.0)
     payee_norm = (payee or "").strip().lower()
 
+    # --- Hard BLOCK conditions (no human can override in-app) --------------- #
     if payee_norm in BLOCKED_PAYEES:
         return {
-            "decision": "BLOCK",
-            "rule": "payee_blocklist",
+            "decision": "BLOCK", "rule": "payee_blocklist",
             "reason": f"Payee '{payee}' is on the blocklist and cannot be paid.",
         }
 
-    if amount >= HUMAN_APPROVAL_LIMIT:
+    if amount < 0:
         return {
-            "decision": "BLOCK",
-            "rule": "hard_spend_cap",
-            "reason": (
-                f"Amount ${amount:,.0f} exceeds the hard spend cap of "
-                f"${HUMAN_APPROVAL_LIMIT:,.0f}. Escalation required."
-            ),
+            "decision": "BLOCK", "rule": "invalid_amount",
+            "reason": "Amount cannot be negative.",
+        }
+
+    if amount >= PER_TRANSACTION_CAP:
+        return {
+            "decision": "BLOCK", "rule": "per_transaction_cap",
+            "reason": (f"Amount ${amount:,.0f} meets/exceeds the per-transaction "
+                       f"cap of ${PER_TRANSACTION_CAP:,.0f}. Escalation required."),
+        }
+
+    month_spent = _posted_spend("month")
+    if month_spent + amount > MONTHLY_BUDGET:
+        return {
+            "decision": "BLOCK", "rule": "monthly_budget_exceeded",
+            "reason": (f"${amount:,.0f} would push month-to-date spend "
+                       f"(${month_spent:,.0f}) past the monthly budget of "
+                       f"${MONTHLY_BUDGET:,.0f}."),
+        }
+
+    # Zero-outflow actions (e.g. cancel_subscription) move no money, so the
+    # allowlist / budget / approval gates don't apply — only the hard BLOCKs above.
+    if amount == 0:
+        return {
+            "decision": "ALLOW", "rule": "no_outflow",
+            "reason": "No money moves (e.g. a cancellation); auto-approved.",
+        }
+
+    # --- NEEDS_APPROVAL conditions (a human may sign off) ------------------- #
+    if ALLOWLIST_ENABLED and payee_norm and payee_norm not in ALLOWLIST:
+        return {
+            "decision": "NEEDS_APPROVAL", "rule": "payee_not_allowlisted",
+            "reason": (f"'{payee}' is not on the vetted payee allowlist; a human "
+                       f"must approve a first-time payee before any auto-payment."),
+        }
+
+    day_spent = _posted_spend("day")
+    if day_spent + amount > DAILY_BUDGET:
+        return {
+            "decision": "NEEDS_APPROVAL", "rule": "daily_budget_exceeded",
+            "reason": (f"${amount:,.0f} would push today's spend "
+                       f"(${day_spent:,.0f}) past the daily budget of "
+                       f"${DAILY_BUDGET:,.0f}; human sign-off required."),
         }
 
     if amount >= AUTO_APPROVE_LIMIT:
         return {
-            "decision": "NEEDS_APPROVAL",
-            "rule": "above_auto_approve_limit",
-            "reason": (
-                f"Amount ${amount:,.0f} is above the auto-approve limit of "
-                f"${AUTO_APPROVE_LIMIT:,.0f}; human sign-off required."
-            ),
+            "decision": "NEEDS_APPROVAL", "rule": "above_auto_approve_limit",
+            "reason": (f"Amount ${amount:,.0f} is above the auto-approve limit of "
+                       f"${AUTO_APPROVE_LIMIT:,.0f}; human sign-off required."),
         }
 
+    # --- ALLOW: allowlisted payee, within cap, budget and approval threshold - #
     return {
-        "decision": "ALLOW",
-        "rule": "within_auto_approve_limit",
-        "reason": f"Amount ${amount:,.0f} is within the auto-approve limit.",
+        "decision": "ALLOW", "rule": "within_auto_approve_limit",
+        "reason": (f"Amount ${amount:,.0f} is within the auto-approve limit for a "
+                   f"vetted payee."),
     }
 
 
@@ -101,7 +241,17 @@ def send_to_guardrail(request):
 
 def decide_approval(approval, decision, decided_by="management"):
     """Apply a human decision (approve/reject) to an ApprovalRequest and post a
-    ledger entry recording the action."""
+    ledger entry recording the action.
+
+    Status-guarded and idempotent: only a ``NEEDS_APPROVAL`` item can be decided.
+    A double-submit (back button / double-click) or a hand-crafted POST trying to
+    force-post a ``BLOCKED`` or already-decided item is a safe no-op — it returns
+    the approval unchanged and posts nothing. This protects the exact guardrail
+    invariant the product is built on: a blocked spend can never reach the ledger.
+    """
+    if approval.status != "NEEDS_APPROVAL" or approval.decided_at is not None:
+        return approval
+
     decision = decision.lower()
     approval.decided_by = decided_by
     approval.decided_at = datetime.utcnow()
@@ -130,7 +280,11 @@ def decide_approval(approval, decision, decided_by="management"):
         policy_decision=approval.policy_decision,
         policy_rule=approval.policy_rule,
         outcome=outcome,
-        transaction_id=f"txn_{approval.request_id}_{approval.id}",
+        # Stripe-style id with an "ch_aegis_" prefix so reconciliation can
+        # recognise a spend Aegis authorised + posted through its own guardrail
+        # and pair it with a confirmed Stripe twin (see stripe_source) instead of
+        # flagging it as a false ledger-only discrepancy.
+        transaction_id=f"ch_aegis_{approval.request_id}_{approval.id}",
         created_by=decided_by,
     )
     db.session.add(entry)

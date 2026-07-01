@@ -15,6 +15,10 @@ the dashboard always produces a real, data-backed result for the demo.
 Stdlib only (urllib) — no extra dependencies.
 """
 import json
+import logging
+import socket
+import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -22,8 +26,29 @@ from flask import current_app
 
 from . import hermes_tools
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b"
 MAX_TOOL_ROUNDS = 6
+
+# --- Resilience knobs ------------------------------------------------------ #
+# Retry only transient failures (timeouts / connection errors / 5xx), never
+# 4xx. Backoff is exponential: 0.5s -> 1s -> 2s between the 3 attempts.
+MAX_ATTEMPTS = 3
+_BACKOFFS = (0.5, 1.0, 2.0)
+# Circuit breaker: after this many *consecutive* failures we stop hammering the
+# endpoint and short-circuit straight to the deterministic fallback for the
+# cooldown window. A single success resets the counter.
+CIRCUIT_THRESHOLD = 4
+CIRCUIT_COOLDOWN = 30.0
+
+_CB_LOCK = threading.Lock()
+_CB = {"failures": 0, "open_until": 0.0}
+
+
+class HermesUnavailable(urllib.error.URLError):
+    """Raised when the circuit breaker is open (subclasses URLError so existing
+    graceful-degradation ``except urllib.error.URLError`` handlers catch it)."""
 
 
 # --------------------------------------------------------------------------- #
@@ -36,9 +61,102 @@ def _cfg(key, default=""):
         return default
 
 
+def _coerce_num(value, default, cast=int):
+    """Coerce a (possibly non-numeric) config value, logging + defaulting on
+    failure so a bad HERMES_TIMEOUT/HERMES_MAX_TOKENS never crashes a call."""
+    try:
+        return cast(value)
+    except (TypeError, ValueError):
+        logger.warning("Invalid numeric Hermes setting %r; using default %r",
+                       value, default)
+        return cast(default)
+
+
 def is_live():
-    """True if a Hermes API URL is configured (we should attempt the real call)."""
+    """True if a Hermes API URL is configured (we should attempt the real call).
+
+    Cheap config check only — it does NOT prove the model server is reachable.
+    Use :func:`ping` for an actual reachability probe.
+    """
     return bool(_cfg("HERMES_API_URL"))
+
+
+def ping(timeout=2.0):
+    """Actively probe whether the Hermes model server is reachable.
+
+    Opens a TCP connection to the configured API host:port (no model call, so it
+    never queues behind the single-threaded model and stays sub-second). Returns
+    True only if the socket connects. Used by /healthz so "hermes_live" reflects
+    real reachability, not just that a URL is set.
+    """
+    url = _cfg("HERMES_API_URL")
+    if not url:
+        return False
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if not host:
+        return False
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+# --------------------------------------------------------------------------- #
+# Circuit breaker + retry helpers
+# --------------------------------------------------------------------------- #
+def _circuit_open():
+    with _CB_LOCK:
+        return bool(_CB["open_until"]) and time.monotonic() < _CB["open_until"]
+
+
+def _record_success():
+    with _CB_LOCK:
+        _CB["failures"] = 0
+        _CB["open_until"] = 0.0
+
+
+def _record_failure():
+    with _CB_LOCK:
+        _CB["failures"] += 1
+        if _CB["failures"] >= CIRCUIT_THRESHOLD:
+            _CB["open_until"] = time.monotonic() + CIRCUIT_COOLDOWN
+            logger.warning(
+                "Hermes circuit breaker OPEN after %d consecutive failures; "
+                "short-circuiting to fallback for %.0fs",
+                _CB["failures"], CIRCUIT_COOLDOWN)
+
+
+def _is_retryable(exc):
+    """Retry transient transport failures and 5xx, but never 4xx client errors."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code is None or exc.code >= 500
+    return isinstance(exc, (urllib.error.URLError, TimeoutError,
+                            socket.timeout, OSError))
+
+
+def _message_from_response(resp):
+    """Validate the OpenAI-shaped response and return ``choices[0].message``.
+
+    Raises ``ValueError`` on any malformed shape (not a dict, missing/empty
+    ``choices``, missing ``message``) so callers degrade to the local narrator
+    instead of throwing a raw KeyError/IndexError.
+    """
+    if not isinstance(resp, dict):
+        raise ValueError(f"response is not a dict: {type(resp).__name__}")
+    choices = resp.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("response missing a non-empty 'choices' list")
+    first = choices[0]
+    if not isinstance(first, dict):
+        raise ValueError("choices[0] is not a dict")
+    msg = first.get("message")
+    if not isinstance(msg, dict):
+        raise ValueError("choices[0].message missing or not a dict")
+    return msg
 
 
 # --------------------------------------------------------------------------- #
@@ -55,6 +173,42 @@ def _post_chat(payload, timeout):
         req.add_header("Authorization", f"Bearer {api_key}")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _post_chat_resilient(payload, timeout, label="hermes"):
+    """``_post_chat`` with retry/backoff and a circuit breaker.
+
+    Raises the last transport error (or ``HermesUnavailable`` when the breaker
+    is open). The caller turns any raised error into graceful degradation.
+    """
+    if _circuit_open():
+        raise HermesUnavailable(
+            f"circuit open ({_CB['failures']} consecutive failures)")
+
+    last_exc = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            resp = _post_chat(payload, timeout)
+            _record_success()
+            return resp
+        except urllib.error.HTTPError as exc:
+            last_exc = exc
+            if not _is_retryable(exc):  # 4xx -> caller's bug, don't retry/trip
+                logger.warning("Hermes %s HTTP %s (client error, no retry)",
+                               label, exc.code)
+                raise
+            logger.warning("Hermes %s HTTP %s on attempt %d/%d",
+                           label, exc.code, attempt, MAX_ATTEMPTS)
+        except (urllib.error.URLError, TimeoutError, socket.timeout,
+                OSError) as exc:
+            last_exc = exc
+            logger.warning("Hermes %s transport error on attempt %d/%d: %s",
+                           label, attempt, MAX_ATTEMPTS, exc)
+        if attempt < MAX_ATTEMPTS:
+            time.sleep(_BACKOFFS[min(attempt - 1, len(_BACKOFFS) - 1)])
+
+    _record_failure()
+    raise last_exc
 
 
 # --------------------------------------------------------------------------- #
@@ -74,19 +228,26 @@ def raw_complete(messages, max_tokens=None, timeout=None, label="oneshot"):
                  "degraded_from": str|None}``
     """
     if not is_live():
+        logger.info("Hermes raw_complete[%s] path=offline", label)
         return {"content": None, "engine": "local", "degraded_from": "offline"}
     model = _cfg("HERMES_MODEL") or DEFAULT_MODEL
-    timeout = int(timeout or _cfg("HERMES_TIMEOUT", 90) or 90)
-    max_tokens = int(max_tokens or _cfg("HERMES_MAX_TOKENS", 400) or 400)
+    timeout = _coerce_num(timeout or _cfg("HERMES_TIMEOUT", 90) or 90, 90)
+    max_tokens = _coerce_num(max_tokens or _cfg("HERMES_MAX_TOKENS", 400) or 400, 400)
     payload = {"model": model, "messages": list(messages),
                "temperature": 0.2, "max_tokens": max_tokens}
+    started = time.monotonic()
     try:
-        resp = _post_chat(payload, timeout)
-        msg = resp["choices"][0]["message"]
+        resp = _post_chat_resilient(payload, timeout, label)
+        msg = _message_from_response(resp)
+        logger.info("Hermes raw_complete[%s] path=live engine=hermes %.2fs",
+                    label, time.monotonic() - started)
         return {"content": msg.get("content", "") or "", "engine": "hermes",
                 "degraded_from": None, "label": label}
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError,
-            KeyError, IndexError) as exc:
+    except (urllib.error.URLError, TimeoutError, socket.timeout, OSError,
+            ValueError, KeyError, IndexError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "Hermes raw_complete[%s] path=fallback after %.2fs: %s",
+            label, time.monotonic() - started, exc)
         return {"content": None, "engine": "local",
                 "degraded_from": f"hermes unreachable: {exc}", "label": label}
 
@@ -104,7 +265,7 @@ def narrate(persona, calls):
 # --------------------------------------------------------------------------- #
 # Public: a single chat turn with automatic tool-calling loop
 # --------------------------------------------------------------------------- #
-def chat(messages, tools=None, use_tools=True, label="hermes"):
+def chat(messages, tools=None, use_tools=True, label="hermes", timeout=None):
     """Run one conversation to completion, resolving tool calls along the way.
 
     Args:
@@ -112,6 +273,7 @@ def chat(messages, tools=None, use_tools=True, label="hermes"):
         tools: tool specs to expose; defaults to the full audit tool set.
         use_tools: if False, no tools are offered (plain chat).
         label: persona label, recorded in the returned trace.
+        timeout: per-call timeout (seconds); defaults to HERMES_TIMEOUT.
 
     Returns:
         dict: ``{"content": str, "trace": [...], "engine": "hermes"|"local",
@@ -119,16 +281,25 @@ def chat(messages, tools=None, use_tools=True, label="hermes"):
     """
     tools = tools if tools is not None else (hermes_tools.TOOL_SPECS if use_tools else None)
     model = _cfg("HERMES_MODEL") or DEFAULT_MODEL
-    timeout = int(_cfg("HERMES_TIMEOUT", 60) or 60)
+    timeout = _coerce_num(timeout or _cfg("HERMES_TIMEOUT", 60) or 60, 60)
 
     if is_live():
+        started = time.monotonic()
         try:
-            return _chat_live(messages, tools, model, timeout, label)
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError,
-                KeyError) as exc:  # network or shape error -> degrade gracefully
+            out = _chat_live(messages, tools, model, timeout, label)
+            logger.info("Hermes chat[%s] path=live engine=hermes %.2fs",
+                        label, time.monotonic() - started)
+            return out
+        except (urllib.error.URLError, TimeoutError, socket.timeout, OSError,
+                ValueError, KeyError, IndexError, json.JSONDecodeError) as exc:
+            # network or shape error -> degrade gracefully to the local narrator.
+            logger.warning(
+                "Hermes chat[%s] path=fallback after %.2fs: %s",
+                label, time.monotonic() - started, exc)
             fallback = _chat_local(messages, tools, label)
             fallback["degraded_from"] = f"hermes unreachable: {exc}"
             return fallback
+    logger.info("Hermes chat[%s] path=offline engine=local", label)
     return _chat_local(messages, tools, label)
 
 
@@ -149,7 +320,7 @@ def _chat_live(messages, tools, model, timeout, label):
 
 def _chat_augmented(messages, tools, model, timeout, label):
     """Run the persona's tools on our side, inject results, get real reasoning."""
-    max_tokens = int(_cfg("HERMES_MAX_TOKENS", 400) or 400)
+    max_tokens = _coerce_num(_cfg("HERMES_MAX_TOKENS", 400) or 400, 400)
     tool_names = [t["function"]["name"] for t in tools]
 
     tool_calls_made = []
@@ -169,8 +340,8 @@ def _chat_augmented(messages, tools, model, timeout, label):
     })
     payload = {"model": model, "messages": convo, "temperature": 0.2,
                "max_tokens": max_tokens}
-    resp = _post_chat(payload, timeout)
-    msg = resp["choices"][0]["message"]
+    resp = _post_chat_resilient(payload, timeout, label)
+    msg = _message_from_response(resp)
     return {
         "content": msg.get("content", "") or "",
         "trace": convo, "engine": "hermes",
@@ -186,8 +357,8 @@ def _chat_native(messages, tools, model, timeout, label):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
-        resp = _post_chat(payload, timeout)
-        msg = resp["choices"][0]["message"]
+        resp = _post_chat_resilient(payload, timeout, label)
+        msg = _message_from_response(resp)
         convo.append(msg)
 
         calls = msg.get("tool_calls") or []

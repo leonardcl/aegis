@@ -40,22 +40,149 @@ def ask_hermes_agent(message, context=None):
             f"Open the Audit page to watch it complete and see the full report."),
             "engine": "hermes" if hermes_client.is_live() else "local"}
 
+    # Identity / capability questions get a deterministic, on-brand answer so the
+    # opening demo beat is reliable and the agent never leaks its platform/model.
+    identity = _identity_reply(message)
+    if identity:
+        return {"reply": identity,
+                "engine": "hermes" if hermes_client.is_live() else "local"}
+
     if hermes_client.is_live():
+        import json
+        from flask import current_app
+        from . import hermes_tools
         page = context.get("page", "")
-        messages = [
-            {"role": "system", "content": agent_guardrail.SYSTEM_PROMPT
-                + (f"\nThe user is on the '{page}' page." if page else "")},
-            {"role": "user", "content": message or ""},
-        ]
-        # Plain conversation (no audit tools) — fast. Explicit audit commands are
-        # handled above by the council. Reasoning/memory/etc. are unrestricted;
-        # only *actions* are guardrailed (see agent_guardrail).
-        out = hermes_client.chat(messages, use_tools=False, label="chat")
-        reply = out.get("content") or _keyword_reply(message)
+
+        # TOOL-AUGMENTED CHAT: pick the tools this question needs, run them over the
+        # LIVE books, and let Hermes answer grounded in real data. (This build hangs
+        # on native tool_calls, so we run tools server-side and inject the results —
+        # same pattern as the council.)
+        selected = _select_tools(message)
+        used, blocks = [], []
+        for name, args in selected:
+            res = hermes_tools.run_tool(name, args)
+            used.append(name)
+            blocks.append(f"### `{name}`{(' ' + json.dumps(args)) if args else ''}\n"
+                          f"```json\n{json.dumps(res, default=str)[:1600]}\n```")
+
+        system = (agent_guardrail.SYSTEM_PROMPT
+                  + (f"\nThe user is on the '{page}' page." if page else "")
+                  + "\nThe LIVE TOOL RESULTS below are ALREADY fetched for you over "
+                    "the real books. Answer the user's question directly from them. "
+                    "Quote the real figures exactly; never invent numbers. Lead with "
+                    "the answer in the first sentence. Do NOT narrate your process, "
+                    "do NOT say you will check/search/look up anything, and do NOT "
+                    "mention tools, files, or data sources — you already have the data. "
+                    "If something needed isn't in the results, give your best one-line "
+                    "recommendation and route it to the guardrail. Be concise.")
+        user = (("LIVE TOOL RESULTS (authoritative):\n" + "\n\n".join(blocks) + "\n\n"
+                 if blocks else "") + f"User: {message or ''}")
+
+        chat_timeout = current_app.config.get("HERMES_CHAT_TIMEOUT", 30)
+        out = hermes_client.raw_complete(
+            [{"role": "system", "content": system},
+             {"role": "user", "content": user}],
+            timeout=chat_timeout, label="chat")
+        reply = out.get("content") or ""
         reply = agent_guardrail.screen_reply(message, reply)
-        return {"reply": reply, "engine": out.get("engine", "hermes")}
+        # If screening removed a raw tool-call leak, the model returned nothing
+        # usable, or it rambled about its own process/tools instead of answering,
+        # fall back to a grounded deterministic reply so the user always gets a
+        # real, on-topic answer rather than a blank or a meta-narration.
+        if not reply.strip() or agent_guardrail.looks_like_process_narration(reply):
+            reply = agent_guardrail.screen_reply(message, _keyword_reply(message))
+        return {"reply": reply, "engine": out.get("engine", "hermes"),
+                "tools_used": used}
 
     return {"reply": _keyword_reply(message), "engine": "local"}
+
+
+# --------------------------------------------------------------------------- #
+# Tool routing for the chatbot — pick the tools a question needs (deterministic).
+# --------------------------------------------------------------------------- #
+def _money(num, suffix):
+    try:
+        v = float(str(num).replace(",", ""))
+    except (ValueError, AttributeError, TypeError):
+        return 0.0
+    s = (suffix or "").lower()
+    if s in ("k", "thousand"):
+        v *= 1_000
+    elif s in ("m", "million"):
+        v *= 1_000_000
+    return v
+
+
+_PAYEE_RE = re.compile(
+    r"(?:to|for|pay)\s+([A-Z][\w&.\-]*(?:\s+[A-Z][\w&.\-]*){0,2})")
+
+
+def _guess_payee(message):
+    m = _PAYEE_RE.search(message or "")
+    return m.group(1).strip() if m else ""
+
+
+def _select_tools(message):
+    """Up to 3 tools relevant to the message (intent routing over the toolbox)."""
+    t = (message or "").lower()
+    tools = []
+
+    def add(name, args=None):
+        if name not in [x[0] for x in tools]:
+            tools.append((name, args or {}))
+
+    m = re.search(r"\$?\s*([0-9][0-9.,]*)\s*(k|m|thousand|million)?", t)
+    if m and any(k in t for k in ("pay", "spend", "buy", "approve", "afford",
+                                  "allowed", "can i", "charge", "purchase", "cost")):
+        add("evaluate_spend", {"amount": _money(m.group(1), m.group(2)),
+                               "payee": _guess_payee(message)})
+    if any(k in t for k in ("budget", "remaining", "how much", "runway",
+                            "over budget", "savings", "saved", "this month")):
+        add("budget_status")
+    if any(k in t for k in ("approval", "pending", "blocked", "queue", "waiting",
+                            "sign off", "sign-off")):
+        add("list_approvals")
+    if any(k in t for k in ("policy", "limit", "cap", "allowlist", "blocklist",
+                            "mandate", "rule", "threshold")):
+        add("policy_summary")
+    if any(k in t for k in ("ledger", "transaction", "recent", "history",
+                            "charge", "paid")):
+        add("ledger_recent", {"limit": 10})
+    if any(k in t for k in ("category", "categories", "breakdown", "by vendor",
+                            "biggest", "top vendor")):
+        add("spend_breakdown")
+    if any(k in t for k in ("find", "search", "cheaper", "alternative", "look up",
+                            "research", "competitor", "vendor for")):
+        add("web_search", {"query": message, "max_results": 5})
+    if any(k in t for k in ("exception", "reconcil", "rogue", "mismatch",
+                            "discrepan", "compliance")):
+        add("full_audit")
+    if not tools:
+        add("financial_snapshot")     # default: situational awareness
+    return tools[:3]
+
+
+_IDENTITY_Q = re.compile(
+    r"\b(who\s+are\s+you|what\s+are\s+you|what\s+can\s+you\s+do|"
+    r"what\s+do\s+you\s+do|introduce\s+yourself|your\s+name|are\s+you\s+(?:an?\s+)?"
+    r"(?:ai|bot|model|llm)|what\s+model|which\s+model|how\s+were\s+you\s+(?:made|built|trained))\b",
+    re.IGNORECASE)
+
+_IDENTITY_REPLY = (
+    "I'm Aegis — the autonomous CFO agent for this back office. I monitor spend "
+    "against your budget, run procurement (discover vendors, score them on value, "
+    "negotiate), keep an append-only ledger, and audit the books — reconciling "
+    "against Stripe and replaying every spend against the policy in force. "
+    "Crucially, I can't move money on my own: every spend passes a deterministic "
+    "guardrail, and anything over the approval threshold goes to a human in the "
+    "approval queue. Ask me about your budget, a procurement request, the pending "
+    "approvals, or say \"run an audit\" and I'll convene the audit council."
+)
+
+
+def _identity_reply(message):
+    """Return the canned identity/capability answer, or None if not such a question."""
+    return _IDENTITY_REPLY if _IDENTITY_Q.search(message or "") else None
 
 
 def _keyword_reply(message):
@@ -66,6 +193,14 @@ def _keyword_reply(message):
                 "because they exceed the auto-approve ceiling. I recommend "
                 "approving the highest-scorecard vendor and rejecting the "
                 "duplicate request.")
+    if any(k in text for k in ("cheaper", "alternative", "switch", "source",
+                               "negotiate", "find a", "replace")):
+        return ("I can source that. Open Procurement and I'll discover candidate "
+                "vendors, score them on price and lead time, run a live negotiation, "
+                "then route the winner through the guardrail — anything above the "
+                "auto-approve limit goes to a human first. For a flagged vendor you "
+                "can also hit ⇄ Negotiate on the Audit page. Tell me the item, your "
+                "budget, and any must-haves and I'll start.")
     if any(k in text for k in ("vendor", "recommend", "scorecard")):
         return ("Based on your priority weights, the top vendor balances price "
                 "and lead time best. I recommend sending it to the guardrail.")

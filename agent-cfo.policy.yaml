@@ -1,0 +1,46 @@
+# Aegis CFO — spend policy (the action boundary).
+#
+# This file is the out-of-process source of truth for the deterministic spend
+# guardrail. The agent may *propose* changes to it but may NOT apply them — it is
+# read by guardrail_service at startup; editing limits is a human-only action
+# (see docs/GUARDRAILS.md, "constrain actions, free cognition").
+#
+# Precedence: built-in defaults  <  this file  <  AEGIS_* environment variables.
+# Amounts are USD.
+
+spend:
+  auto_approve_limit: 5000        # <= this, for a vetted payee within budget -> ALLOW
+  per_transaction_max: 50000      # >= this single transaction -> BLOCK
+  daily_budget: 100000            # over today's budget -> NEEDS_APPROVAL
+  monthly_budget: 250000          # over the month's budget -> BLOCK
+
+payees:
+  deny_unlisted: true             # a payee neither blocked nor allowlisted -> NEEDS_APPROVAL
+  allowlist:                      # vetted payees eligible for automatic payment
+    - AWS
+    - NimbusCloud
+    - Atlassian
+    - GitHub
+    - Slack
+    - CloudFlare
+    - CloudFlare Inc
+    - DataVault
+    - HyperScale
+    - OpenAI
+    - Anthropic
+    - NVIDIA
+    - Vercel
+    - Notion
+    - Stripe
+    - Figma
+    - Zoom
+    - Okta
+    - Snyk
+    - GitLab
+    - Meridian
+    - ClearAudit
+    - Google Cloud
+    - Datadog
+  blocklist:                      # always denied, regardless of amount
+    - Unverified Vendor
+    - Sanctioned Ltd

@@ -4,6 +4,7 @@ from datetime import datetime
 from flask import (
     Blueprint,
     flash,
+    jsonify,
     redirect,
     render_template,
     request as flask_request,
@@ -39,20 +40,48 @@ def _parse_date(value):
         return None
 
 
+def parse_money(value, default=0.0):
+    """Coerce a user-entered money string to float, tolerating ``$``, thousands
+    commas and ``k``/``m`` suffixes (``"$30,000"`` -> 30000.0, ``"3.5k"`` -> 3500.0).
+    Never raises — bad input returns ``default`` instead of 500-ing the page."""
+    if value is None:
+        return default
+    s = str(value).strip().lower().replace("$", "").replace(",", "").replace("_", "")
+    if not s:
+        return default
+    mult = 1.0
+    if s.endswith("k"):
+        mult, s = 1_000.0, s[:-1]
+    elif s.endswith("m"):
+        mult, s = 1_000_000.0, s[:-1]
+    try:
+        return float(s) * mult
+    except ValueError:
+        return default
+
+
+def parse_int(value, default=0):
+    """Coerce to int via :func:`parse_money`; never raises."""
+    try:
+        return int(round(parse_money(value, default)))
+    except (ValueError, TypeError):
+        return default
+
+
 def _apply_form(req, form):
     req.title = form.get("title", "").strip()
     req.description = form.get("description", "").strip()
     req.category = form.get("category", "").strip()
     req.quantity_or_usage = form.get("quantity_or_usage", "").strip()
     req.deadline = _parse_date(form.get("deadline"))
-    req.budget_ceiling = float(form.get("budget_ceiling") or 0)
+    req.budget_ceiling = parse_money(form.get("budget_ceiling"), 0.0)
     req.must_haves = form.get("must_haves", "").strip()
     req.nice_to_haves = form.get("nice_to_haves", "").strip()
-    req.priority_price = int(form.get("priority_price") or 3)
-    req.priority_time = int(form.get("priority_time") or 3)
-    req.priority_risk = int(form.get("priority_risk") or 3)
-    req.priority_quality = int(form.get("priority_quality") or 3)
-    req.priority_terms = int(form.get("priority_terms") or 3)
+    req.priority_price = parse_int(form.get("priority_price"), 3)
+    req.priority_time = parse_int(form.get("priority_time"), 3)
+    req.priority_risk = parse_int(form.get("priority_risk"), 3)
+    req.priority_quality = parse_int(form.get("priority_quality"), 3)
+    req.priority_terms = parse_int(form.get("priority_terms"), 3)
     req.status = form.get("status", "draft")
 
 
@@ -96,6 +125,46 @@ def intake_need():
     return redirect(url_for("procurement.detail", req_id=req.id))
 
 
+@bp.route("/autopilot", methods=["POST"])
+def autopilot_start():
+    """AUTOPILOT — one action. Parse the need, then run the whole pipeline
+    (discover → validate → enrich → recommend → assess → negotiate) in the
+    background with a live progress log. The human reviews only at the end."""
+    text = flask_request.form.get("need", "").strip()
+    if not text:
+        flash("Tell the CFO what you need, and it will take it from there.", "warning")
+        return redirect(url_for("procurement.list_requests"))
+
+    use_hermes = flask_request.form.get("use_hermes") in ("1", "true", "on")
+    spec = intake.parse_need(text, use_hermes=use_hermes)
+    req = ProcurementRequest()
+    intake.apply_spec_to_request(req, spec, raw_text=text)
+    db.session.add(req)
+    db.session.commit()
+
+    from ..services import jobs
+    job_id = jobs.start_autopilot_job(
+        current_app._get_current_object(), req.id, want_hermes=use_hermes)
+    flash("Autopilot started — researching vendors, validating links, scoring, "
+          "recommending and negotiating. This page updates live.", "info")
+    return redirect(url_for("procurement.detail", req_id=req.id, autopilot=job_id))
+
+
+@bp.route("/autopilot-status/<job_id>")
+def autopilot_status(job_id):
+    """Poll a running autopilot job (the detail page streams its progress log)."""
+    from ..services import jobs
+    j = jobs.get_job(job_id)
+    if not j:
+        return jsonify({"status": "unknown", "stage": "", "events": []})
+    return jsonify({"status": j.get("status", "unknown"),
+                    "stage": j.get("stage", ""),
+                    "events": j.get("events", []),
+                    "recommended_vendor_id": j.get("recommended_vendor_id"),
+                    "negotiated": j.get("negotiated"),
+                    "error": j.get("error")})
+
+
 @bp.route("/new", methods=["GET", "POST"])
 def create():
     if flask_request.method == "POST":
@@ -124,16 +193,27 @@ def create():
 
 @bp.route("/<int:req_id>")
 def detail(req_id):
-    req = ProcurementRequest.query.get_or_404(req_id)
+    req = db.get_or_404(ProcurementRequest, req_id)
     procurement_service.score_vendors(req)
     return render_template(
-        "procurement/detail.html", req=req, active_page="procurement"
+        "procurement/detail.html", req=req, active_page="procurement",
+        nego_job=flask_request.args.get("nego_job"),
+        autopilot_job=flask_request.args.get("autopilot"),
     )
+
+
+@bp.route("/negotiation-status/<job_id>")
+def negotiation_status(job_id):
+    """Poll a background negotiation job (used by the detail page)."""
+    from ..services import jobs
+    j = jobs.get_job(job_id)
+    return jsonify({"status": j.get("status", "unknown"),
+                    "engine": j.get("engine"), "agreed": j.get("agreed")})
 
 
 @bp.route("/<int:req_id>/edit", methods=["GET", "POST"])
 def edit(req_id):
-    req = ProcurementRequest.query.get_or_404(req_id)
+    req = db.get_or_404(ProcurementRequest, req_id)
     if flask_request.method == "POST":
         _apply_form(req, flask_request.form)
         db.session.commit()
@@ -149,7 +229,7 @@ def edit(req_id):
 
 @bp.route("/<int:req_id>/delete", methods=["POST"])
 def delete(req_id):
-    req = ProcurementRequest.query.get_or_404(req_id)
+    req = db.get_or_404(ProcurementRequest, req_id)
     db.session.delete(req)
     db.session.commit()
     flash("Procurement request deleted.", "info")
@@ -158,18 +238,18 @@ def delete(req_id):
 
 @bp.route("/<int:req_id>/vendors", methods=["POST"])
 def add_vendor(req_id):
-    req = ProcurementRequest.query.get_or_404(req_id)
+    req = db.get_or_404(ProcurementRequest, req_id)
     form = flask_request.form
     vendor = VendorOption(
         request_id=req.id,
         name=form.get("name", "").strip() or "Unnamed vendor",
-        price=float(form.get("price") or 0),
-        lead_time_days=int(form.get("lead_time_days") or 0),
-        score_price=int(form.get("score_price") or 0),
-        score_time=int(form.get("score_time") or 0),
-        score_risk=int(form.get("score_risk") or 0),
-        score_quality=int(form.get("score_quality") or 0),
-        score_terms=int(form.get("score_terms") or 0),
+        price=parse_money(form.get("price"), 0.0),
+        lead_time_days=parse_int(form.get("lead_time_days"), 0),
+        score_price=parse_int(form.get("score_price"), 0),
+        score_time=parse_int(form.get("score_time"), 0),
+        score_risk=parse_int(form.get("score_risk"), 0),
+        score_quality=parse_int(form.get("score_quality"), 0),
+        score_terms=parse_int(form.get("score_terms"), 0),
         notes=form.get("notes", "").strip(),
     )
     db.session.add(vendor)
@@ -182,7 +262,7 @@ def add_vendor(req_id):
 def discover_vendors(req_id):
     """W2 DISCOVER — find candidate vendors for this request's requirement spec
     and add them to the scorecard."""
-    req = ProcurementRequest.query.get_or_404(req_id)
+    req = db.get_or_404(ProcurementRequest, req_id)
     mode = flask_request.form.get("mode") or None
     # The "Hermes" checkbox asks the real agent for candidates -> live mode.
     if flask_request.form.get("use_hermes") in ("1", "true", "on"):
@@ -211,7 +291,7 @@ def discover_vendors(req_id):
 def enrich_vendors(req_id):
     """W3 ENRICH — score every candidate and disqualify those missing a
     must-have, so the scorecard reflects real value (not just price)."""
-    req = ProcurementRequest.query.get_or_404(req_id)
+    req = db.get_or_404(ProcurementRequest, req_id)
     if not req.vendors:
         flash("Discover or add vendors before enriching.", "warning")
         return redirect(url_for("procurement.detail", req_id=req.id))
@@ -226,7 +306,7 @@ def enrich_vendors(req_id):
 
 @bp.route("/<int:req_id>/recommend", methods=["POST"])
 def recommend(req_id):
-    req = ProcurementRequest.query.get_or_404(req_id)
+    req = db.get_or_404(ProcurementRequest, req_id)
     use_hermes = (
         flask_request.form.get("use_hermes") in ("1", "true", "on")
         or current_app.config.get("PROCUREMENT_EVAL_HERMES", False)
@@ -250,9 +330,10 @@ def recommend(req_id):
 
 @bp.route("/<int:req_id>/negotiate", methods=["POST"])
 def negotiate_vendor(req_id):
-    """W5 NEGOTIATE — run the agent-vs-agent negotiation on the recommended (or
-    chosen) vendor and persist the outcome for the guardrail + ledger."""
-    req = ProcurementRequest.query.get_or_404(req_id)
+    """W5 NEGOTIATE — run the (live agent-to-agent) negotiation in the background
+    and let the detail page poll for the result, so a slow live model never hangs
+    the browser."""
+    req = db.get_or_404(ProcurementRequest, req_id)
     vid = flask_request.form.get("vendor_id")
     vendor = None
     if vid:
@@ -262,16 +343,25 @@ def negotiate_vendor(req_id):
         flash("Recommend or add a vendor before negotiating.", "warning")
         return redirect(url_for("procurement.detail", req_id=req.id))
 
-    result = negotiation.negotiate(vendor.name, vendor.price)
+    from ..services import hermes_client, jobs
+    live = (hermes_client.is_live()
+            and current_app.config.get("PROCUREMENT_NEGOTIATE_HERMES", True))
+    if live:
+        # Live agent-to-agent can take ~30–90s — run it in the background and let
+        # the detail page poll, so the browser never hangs.
+        job_id = jobs.start_negotiation_job(current_app._get_current_object(), vendor.id)
+        flash(f"Negotiation started — the Aegis buyer agent and the {vendor.name} "
+              f"seller agent are negotiating live. This page updates automatically "
+              f"when they settle.", "info")
+        return redirect(url_for("procurement.detail", req_id=req.id, nego_job=job_id))
+
+    # Offline / deterministic — instant, run synchronously.
+    result = negotiation.negotiate(vendor.name, vendor.price, live=False)
     vendor.negotiation = result
     db.session.commit()
-
     if result["agreed"]:
-        flash(
-            f"Negotiated with {vendor.name}: agreed ${result['agreed_amount']:,.0f} "
-            f"(saved ${result['savings']:,.0f}, {result['savings_pct']}%).",
-            "success",
-        )
+        flash(f"Negotiated with {vendor.name}: agreed ${result['agreed_amount']:,.0f} "
+              f"(saved ${result['savings']:,.0f}, {result['savings_pct']}%).", "success")
     else:
         flash(f"Negotiation with {vendor.name}: no agreement — keeping current terms.",
               "warning")
@@ -280,7 +370,7 @@ def negotiate_vendor(req_id):
 
 @bp.route("/<int:req_id>/send-to-guardrail", methods=["POST"])
 def to_guardrail(req_id):
-    req = ProcurementRequest.query.get_or_404(req_id)
+    req = db.get_or_404(ProcurementRequest, req_id)
     if not req.vendors:
         flash("Add at least one vendor before sending to guardrail.", "warning")
         return redirect(url_for("procurement.detail", req_id=req.id))

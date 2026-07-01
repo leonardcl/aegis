@@ -49,10 +49,15 @@ damage**. We don't fight it — we mirror it at the application layer.
 
 The money-and-effects boundary lives in the app, where the actual spend happens:
 
-- **`guardrail_service.evaluate_policy`** — the deterministic spend gate:
-  blocked-payee list, per-transaction cap, auto-approve limit, hard cap →
-  `ALLOW` / `NEEDS_APPROVAL` / `BLOCK`. The agent cannot reason its way around it;
-  it's plain code, evaluated *before* any money moves.
+- **`guardrail_service.evaluate_policy`** — the deterministic spend gate. In order:
+  blocked-payee list (**BLOCK**), negative amount (**BLOCK**), per-transaction cap
+  (**BLOCK**), monthly budget (**BLOCK** if exceeded), **default-deny payee
+  allowlist** (a payee that is neither blocked nor vetted → **NEEDS_APPROVAL**, so
+  a human vets a first-time payee — the agent never autonomously pays a stranger),
+  daily budget (**NEEDS_APPROVAL** if exceeded), and the auto-approve threshold
+  (**NEEDS_APPROVAL** above it) → otherwise **ALLOW**. The budget accumulators read
+  the append-only ledger (UTC) so they reflect real posted spend. The agent cannot
+  reason its way around any of it; it's plain code, evaluated *before* money moves.
 - **`agent_guardrail`** — the agent-facing wrapper:
   - `SYSTEM_PROMPT` — the operating envelope handed to Hermes on every chat. It
     explicitly tells the agent its **freedoms** (think, remember, self-improve)
@@ -90,12 +95,27 @@ preferences across sessions, and refine its own skills — none of that is gated
 
 ## Tuning the boundary
 
-- **Spend limits:** `app/services/guardrail_service.py` →
-  `AUTO_APPROVE_LIMIT`, `HUMAN_APPROVAL_LIMIT`, `BLOCKED_PAYEES`.
+All spend limits live in `app/services/guardrail_service.py` and are overridable
+by environment variable (no code change needed for a deployment):
+
+| Control | Constant | Env var | Default |
+|---------|----------|---------|---------|
+| Auto-approve threshold | `AUTO_APPROVE_LIMIT` | `AEGIS_AUTO_APPROVE_LIMIT` | 5,000 |
+| Per-transaction hard cap (BLOCK) | `PER_TRANSACTION_CAP` | `AEGIS_PER_TRANSACTION_CAP` | 50,000 |
+| Daily budget (→ NEEDS_APPROVAL) | `DAILY_BUDGET` | `AEGIS_DAILY_BUDGET` | 100,000 |
+| Monthly budget (→ BLOCK) | `MONTHLY_BUDGET` | `AEGIS_MONTHLY_BUDGET` | 250,000 |
+| Vetted payee allowlist | `ALLOWLIST` | `AEGIS_ALLOWLIST` (extends) | see source |
+| Allowlist enforcement on/off | `ALLOWLIST_ENABLED` | `AEGIS_ALLOWLIST_ENABLED` | on |
+| Blocked payees | `BLOCKED_PAYEES` | — | unverified/sanctioned |
+
+Other knobs:
 - **Cognition / boundary action lists:** `app/services/agent_guardrail.py` →
   `check_action` (`cognition`, `boundary` sets).
 - **Operating envelope wording:** `agent_guardrail.SYSTEM_PROMPT`.
 - **Freeze self-modification temporarily:** NemoClaw "shields up" on the sandbox.
+- **Development bypass:** `GUARDRAILS_DISABLED=1` makes the gate return ALLOW
+  (loud `dev_bypass` rule + startup warning). Default OFF; never set for the demo.
+  The self-modification BLOCK stays denied even under the bypass.
 
 The rule of thumb when adding a new capability: *if it only changes what the
 agent knows or how it thinks, leave it free; if it changes the world or the

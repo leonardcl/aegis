@@ -39,6 +39,27 @@
   {% endfor %}
 </div>
 
+{% if autopilot_job %}
+<!-- AUTOPILOT live progress (background job; streams the CFO's work) -->
+<div class="panel mt-2" id="autopilot-live"
+     data-job="{{ autopilot_job }}"
+     data-detail="{{ url_for('procurement.detail', req_id=req.id) }}"
+     data-status="{{ url_for('procurement.autopilot_status', job_id='__JOB__') }}">
+  <div class="panel-head">
+    <h2><i class="bi bi-robot"></i> Autopilot
+      <span class="badge text-bg-info align-middle" id="ap-stage">starting…</span></h2>
+    <div class="spinner-border spinner-border-sm text-primary" id="ap-spinner"></div>
+  </div>
+  <div class="panel-body">
+    <div class="small text-muted mb-2">The CFO is researching vendors, validating
+      links, scoring, recommending and (if worthwhile) negotiating. You review
+      only the result — this can take 1–3 min on the live model.</div>
+    <ul class="list-unstyled mb-0 small" id="autopilot-log"
+        style="max-height:320px; overflow:auto; font-family:var(--bs-font-monospace,monospace);"></ul>
+  </div>
+</div>
+{% endif %}
+
 <div class="row g-3 mt-1">
   <div class="col-lg-8">
     <!-- Details -->
@@ -118,6 +139,9 @@
                 <strong>{% if v.url %}<a href="{{ v.url }}" target="_blank" rel="noopener">{{ v.name }}</a>{% else %}{{ v.name }}{% endif %}</strong>
                 {% if req.recommended_vendor_id == v.id %}<span class="badge text-bg-success"><i class="bi bi-trophy"></i> Recommended</span>{% endif %}
                 {% if v.source and v.source != 'manual' %}<span class="badge text-bg-light text-muted border">{{ v.source }}</span>{% endif %}
+                {% set lstat = v.enrichment.get('link_status') %}
+                {% if lstat == 'alive' %}<span class="badge text-bg-success" title="Link verified reachable"><i class="bi bi-link-45deg"></i> link ok</span>
+                {% elif lstat == 'blocked' %}<span class="badge text-bg-warning text-dark" title="Domain resolves but bot-guarded; site is real but we couldn't fully fetch it"><i class="bi bi-shield-lock"></i> link guarded</span>{% endif %}
                 {% if v.disqualified %}<span class="badge text-bg-danger" title="{{ v.disqualify_reason }}"><i class="bi bi-x-circle"></i> disqualified</span>{% endif %}
                 {% if v.price_basis %}<div class="small text-muted">{{ v.price_basis }}</div>{% endif %}
                 {% if v.disqualified and v.disqualify_reason %}<div class="small text-danger">{{ v.disqualify_reason }}</div>
@@ -148,12 +172,33 @@
       </div>
     </div>
 
+    <!-- Live negotiation in progress (background job; this page auto-updates) -->
+    {% if nego_job %}
+    <div class="panel mt-3" id="nego-live"
+         data-job="{{ nego_job }}"
+         data-detail="{{ url_for('procurement.detail', req_id=req.id) }}"
+         data-status="{{ url_for('procurement.negotiation_status', job_id='__JOB__') }}">
+      <div class="panel-body d-flex align-items-center gap-3">
+        <div class="spinner-border text-primary"></div>
+        <div>
+          <strong>Live negotiation in progress…</strong>
+          <div class="small text-muted">The Aegis <em>buyer</em> agent and the vendor
+            <em>seller</em> agent are exchanging real offers on the live model
+            (the seller has a hidden floor it won't reveal). This can take ~30–90s;
+            the page updates automatically when they settle.</div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
     <!-- Negotiation transcript (W5) -->
     {% set nego = req.recommended_vendor.negotiation if req.recommended_vendor else {} %}
     {% if nego %}
     <div class="panel mt-3">
       <div class="panel-head">
-        <h2><i class="bi bi-arrow-left-right"></i> Negotiation — {{ req.recommended_vendor.name }}</h2>
+        <h2><i class="bi bi-arrow-left-right"></i> Negotiation — {{ req.recommended_vendor.name }}
+          {% if nego.engine == 'hermes' %}<span class="badge text-bg-info align-middle"><i class="bi bi-cpu"></i> live agents</span>{% endif %}
+        </h2>
         {% if nego.agreed %}
           <span class="badge text-bg-success">agreed {{ nego.agreed_amount | money }} · saved {{ nego.savings | money }} ({{ nego.savings_pct }}%)</span>
         {% else %}
@@ -211,13 +256,18 @@
           <p class="text-muted">No recommendation yet. Run <strong>3 · Recommend</strong> to score vendors.</p>
         {% endif %}
         {% if req.recommended_vendor %}
-        <form method="post" action="{{ url_for('procurement.negotiate_vendor', req_id=req.id) }}" class="mt-2"
-              data-loading
-              data-loading-title="Negotiating…"
-              data-loading-sub="Running the agent-vs-agent negotiation rounds with the vendor.">
+        {% set nego_assess = req.recommended_vendor.enrichment.get('negotiability') %}
+        {% if nego_assess %}
+        <div class="alert {{ 'alert-primary' if nego_assess.negotiable else 'alert-secondary' }} small py-2 mt-2 mb-2">
+          <strong>{{ 'Negotiable' if nego_assess.negotiable else 'Not worth negotiating' }}:</strong>
+          {{ nego_assess.reason }}
+          {% if nego_assess.tactic %}<div class="mt-1"><em>Play:</em> {{ nego_assess.tactic }}</div>{% endif %}
+        </div>
+        {% endif %}
+        <form method="post" action="{{ url_for('procurement.negotiate_vendor', req_id=req.id) }}" class="mt-2">
           <input type="hidden" name="vendor_id" value="{{ req.recommended_vendor.id }}">
           <button class="btn btn-sm btn-outline-primary w-100">
-            <i class="bi bi-arrow-left-right"></i> 4 · Negotiate with {{ req.recommended_vendor.name }}
+            <i class="bi bi-arrow-left-right"></i> 4 · Negotiate (live agents) with {{ req.recommended_vendor.name }}
           </button>
         </form>
         {% endif %}
@@ -248,4 +298,61 @@
     </div>
   </div>
 </div>
+
+{% if autopilot_job %}
+<script>
+(function () {
+  var el = document.getElementById("autopilot-live");
+  if (!el) return;
+  var statusUrl = el.dataset.status.replace("__JOB__", el.dataset.job);
+  var detail = el.dataset.detail;
+  var logEl = document.getElementById("autopilot-log");
+  var stageEl = document.getElementById("ap-stage");
+  var rendered = 0;
+  var iv = setInterval(function () {
+    fetch(statusUrl).then(function (r) { return r.json(); }).then(function (d) {
+      var events = d.events || [];
+      for (var i = rendered; i < events.length; i++) {
+        var ev = events[i];
+        var li = document.createElement("li");
+        li.className = "py-1 border-bottom";
+        li.innerHTML = '<span class="text-muted">' + (ev.ts || "") + '</span> ' +
+          '<span class="badge text-bg-light text-muted border">' + (ev.stage || "") +
+          '</span> ' + (ev.msg || "").replace(/[<>&]/g, function (c) {
+            return { '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c];
+          });
+        logEl.appendChild(li);
+      }
+      if (events.length > rendered) { rendered = events.length; logEl.scrollTop = logEl.scrollHeight; }
+      if (stageEl && d.stage) stageEl.textContent = d.stage;
+      if (d.status === "done" || d.status === "error" || d.status === "unknown") {
+        clearInterval(iv);
+        var sp = document.getElementById("ap-spinner"); if (sp) sp.remove();
+        // brief pause so the final line is visible, then reload to the finished view
+        setTimeout(function () { window.location.href = detail; }, 1500);
+      }
+    }).catch(function () {});
+  }, 1800);
+})();
+</script>
+{% endif %}
+
+{% if nego_job %}
+<script>
+(function () {
+  var el = document.getElementById("nego-live");
+  if (!el) return;
+  var statusUrl = el.dataset.status.replace("__JOB__", el.dataset.job);
+  var detail = el.dataset.detail;
+  var iv = setInterval(function () {
+    fetch(statusUrl).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.status === "done" || d.status === "error" || d.status === "unknown") {
+        clearInterval(iv);
+        window.location.href = detail;   // reload (without nego_job) to show the transcript
+      }
+    }).catch(function () {});
+  }, 3000);
+})();
+</script>
+{% endif %}
 {% endblock %}

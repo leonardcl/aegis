@@ -1,5 +1,5 @@
 {
-  "$comment": "Tool manifest for the Hermes Agent sandbox. Each tool is an HTTP-backed function whose schema matches app/services/hermes_tools.TOOL_SPECS. Point base_url at the Aegis CFO app reachable from inside the sandbox (host gateway IP or tunnel). If HERMES_TOOL_TOKEN is set in Aegis CFO, send it as a bearer token.",
+  "$comment": "Tool manifest for the Hermes Agent sandbox \u2014 the full Aegis CFO toolbox (audit + web/crawl + financial analysis). Each tool is HTTP-backed; schema matches app/services/hermes_tools.TOOL_SPECS. Point base_url at the Aegis app reachable from the sandbox; send HERMES_TOOL_TOKEN as a bearer token if set. Auto-generated.",
   "base_url": "http://host.docker.internal:5000/hermes",
   "auth": {
     "type": "bearer",
@@ -8,56 +8,308 @@
   "tools": [
     {
       "name": "gather_period",
-      "description": "GATHER: ledger entries + Stripe charges + active policy for the period.",
-      "http": {"method": "POST", "path": "/tools/gather_period"},
+      "description": "GATHER: ledger entries, Stripe charges and the active policy for the period. Call first.",
+      "http": {
+        "method": "POST",
+        "path": "/tools/gather_period"
+      },
       "parameters": {
         "type": "object",
-        "properties": {"period_days": {"type": "integer", "default": 30}}
+        "properties": {
+          "period_days": {
+            "type": "integer",
+            "description": "Window in days (default 30)."
+          }
+        }
       }
     },
     {
       "name": "reconcile_ledger",
-      "description": "RECONCILE: match ledger vs Stripe; returns matched, stripe_only, ledger_only, amount_mismatch.",
-      "http": {"method": "POST", "path": "/tools/reconcile_ledger"},
+      "description": "RECONCILE: match ledger vs Stripe \u2192 matched, stripe_only (rogue), ledger_only, amount_mismatch.",
+      "http": {
+        "method": "POST",
+        "path": "/tools/reconcile_ledger"
+      },
       "parameters": {
         "type": "object",
-        "properties": {"period_days": {"type": "integer", "default": 30}}
+        "properties": {
+          "period_days": {
+            "type": "integer",
+            "description": "Window in days (default 30)."
+          }
+        }
       }
     },
     {
       "name": "compliance_replay",
-      "description": "COMPLIANCE REPLAY: re-evaluate each posted spend vs the policy in force; pass/fail + breaches.",
-      "http": {"method": "POST", "path": "/tools/compliance_replay"},
+      "description": "COMPLIANCE: re-check every posted spend against the policy in force \u2192 pass/fail + breaches.",
+      "http": {
+        "method": "POST",
+        "path": "/tools/compliance_replay"
+      },
       "parameters": {
         "type": "object",
-        "properties": {"period_days": {"type": "integer", "default": 30}}
+        "properties": {
+          "period_days": {
+            "type": "integer",
+            "description": "Window in days (default 30)."
+          }
+        }
       }
     },
     {
       "name": "period_review",
-      "description": "PERIOD REVIEW: spikes, repeat vendors, trends over the window.",
-      "http": {"method": "POST", "path": "/tools/period_review"},
+      "description": "PERIOD REVIEW: spikes, repeat vendors, trends across the window.",
+      "http": {
+        "method": "POST",
+        "path": "/tools/period_review"
+      },
       "parameters": {
         "type": "object",
-        "properties": {"period_days": {"type": "integer", "default": 30}}
+        "properties": {
+          "period_days": {
+            "type": "integer",
+            "description": "Window in days (default 30)."
+          }
+        }
       }
     },
     {
       "name": "categorize_spend",
       "description": "CATEGORIZE: spend by category and vendor with totals.",
-      "http": {"method": "POST", "path": "/tools/categorize_spend"},
+      "http": {
+        "method": "POST",
+        "path": "/tools/categorize_spend"
+      },
       "parameters": {
         "type": "object",
-        "properties": {"period_days": {"type": "integer", "default": 30}}
+        "properties": {
+          "period_days": {
+            "type": "integer",
+            "description": "Window in days (default 30)."
+          }
+        }
+      }
+    },
+    {
+      "name": "recommend_actions",
+      "description": "ADVISE: judge every vendor (keep/consolidate/negotiate/investigate) with savings.",
+      "http": {
+        "method": "POST",
+        "path": "/tools/recommend_actions"
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "period_days": {
+            "type": "integer",
+            "description": "Window in days (default 30)."
+          }
+        }
       }
     },
     {
       "name": "full_audit",
-      "description": "Run the whole flow and return the consolidated payload + escalations.",
-      "http": {"method": "POST", "path": "/tools/full_audit"},
+      "description": "Run the entire audit flow and return one payload.",
+      "http": {
+        "method": "POST",
+        "path": "/tools/full_audit"
+      },
       "parameters": {
         "type": "object",
-        "properties": {"period_days": {"type": "integer", "default": 30}}
+        "properties": {
+          "period_days": {
+            "type": "integer",
+            "description": "Window in days (default 30)."
+          }
+        }
+      }
+    },
+    {
+      "name": "web_search",
+      "description": "Search the live web (real results: title, url, snippet, domain). Use to research vendors, prices, alternatives.",
+      "http": {
+        "method": "POST",
+        "path": "/tools/web_search"
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search query."
+          },
+          "max_results": {
+            "type": "integer",
+            "description": "Default 6."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "fetch_page",
+      "description": "Crawl a URL and return its readable text (centred on price signals). Use to read a vendor's pricing page.",
+      "http": {
+        "method": "POST",
+        "path": "/tools/fetch_page"
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "max_chars": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "url"
+        ]
+      }
+    },
+    {
+      "name": "check_url",
+      "description": "Liveness of a URL: alive / blocked / dead (keeps bot-blocked real sites).",
+      "http": {
+        "method": "POST",
+        "path": "/tools/check_url"
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ]
+      }
+    },
+    {
+      "name": "budget_status",
+      "description": "Current budget posture: monthly/daily budgets, spent, remaining, caps, realized savings.",
+      "http": {
+        "method": "POST",
+        "path": "/tools/budget_status"
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "ledger_recent",
+      "description": "Recent ledger entries; optional payee filter.",
+      "http": {
+        "method": "POST",
+        "path": "/tools/ledger_recent"
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "payee": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "spend_breakdown",
+      "description": "Spend grouped by category and vendor for the period.",
+      "http": {
+        "method": "POST",
+        "path": "/tools/spend_breakdown"
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "period_days": {
+            "type": "integer",
+            "description": "Window in days (default 30)."
+          }
+        }
+      }
+    },
+    {
+      "name": "list_approvals",
+      "description": "The approval queue; optional status filter (NEEDS_APPROVAL / BLOCKED / APPROVED / REJECTED).",
+      "http": {
+        "method": "POST",
+        "path": "/tools/list_approvals"
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "name": "policy_summary",
+      "description": "The spend mandate in force: limits, allowlist, blocklist.",
+      "http": {
+        "method": "POST",
+        "path": "/tools/policy_summary"
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "evaluate_spend",
+      "description": "What-if: run a proposed spend through the guardrail \u2192 ALLOW / NEEDS_APPROVAL / BLOCK with the rule.",
+      "http": {
+        "method": "POST",
+        "path": "/tools/evaluate_spend"
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "number"
+          },
+          "payee": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount",
+          "payee"
+        ]
+      }
+    },
+    {
+      "name": "financial_snapshot",
+      "description": "SENSE: one combined view \u2014 budget + audit headline + pending and blocked approvals.",
+      "http": {
+        "method": "POST",
+        "path": "/tools/financial_snapshot"
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "period_days": {
+            "type": "integer",
+            "description": "Window in days (default 30)."
+          }
+        }
       }
     }
   ]

@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}About · {{ app_name }}{% endblock %}
+{% block subtitle %}What Aegis is{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div class="eyebrow">Autonomous financial operations</div>
+  <h1>Aegis CFO</h1>
+  <p class="lead-tag">{{ app_tagline }}</p>
+</div>
+
+<!-- One-liner everyone can read -->
+<div class="panel mb-3">
+  <div class="panel-body">
+    <p class="mb-2">
+      <strong>Aegis is an AI back-office for company spend.</strong> It watches your
+      subscriptions and usage, runs procurement, and audits its own books —
+      autonomously. The catch that makes it trustworthy: <strong>every dollar it
+      moves must pass a hard spending rule it cannot override.</strong> If a payment
+      is outside the mandate you set, Aegis physically can't make it — it stops and
+      asks a human.
+    </p>
+    <p class="mb-0 text-muted">
+      The hard problem in 2026 isn't building a capable agent — it's trusting one
+      with a corporate card. Aegis is the trust layer: <em>a smart agent inside an
+      action-boundary it can't cross.</em>
+    </p>
+  </div>
+</div>
+
+<!-- The principle -->
+<div class="panel mb-3 principle">
+  <div class="panel-body">
+    <div class="eyebrow mb-1">The principle</div>
+    <div class="principle-line">Constrain actions. Free cognition.</div>
+    <p class="mb-0 text-muted mt-2">
+      The agent may reason, remember and self-improve without limit. Only its
+      <em>effects on the world</em> — moving money — are gated. A smarter agent
+      inside a sound boundary is the goal, not a dumber one on a leash.
+    </p>
+  </div>
+</div>
+
+<!-- What it does -->
+<div class="row g-3 mb-3">
+  <div class="col-md-6 col-xl-3">
+    <div class="kpi-card h-100">
+      <div class="feat-ic"><i class="bi bi-shield-lock-fill"></i></div>
+      <div class="feat-title">The guardrail</div>
+      <p class="feat-body">A deterministic spend gate: payee allowlist (default-deny),
+        per-transaction cap, daily/monthly budgets, blocklist → <code>ALLOW</code> /
+        <code>NEEDS_APPROVAL</code> / <code>BLOCK</code>. The mandate lives out of
+        process; the agent may <em>propose</em> edits, never apply them.</p>
+    </div>
+  </div>
+  <div class="col-md-6 col-xl-3">
+    <div class="kpi-card h-100">
+      <div class="feat-ic"><i class="bi bi-robot"></i></div>
+      <div class="feat-title">Autonomous daily review</div>
+      <p class="feat-body">Ingests usage + credit data, flags zero-usage subscriptions
+        and credits about to run dry, runs each through the same guardrail, and
+        auto-executes only what's ALLOWed — recording realized savings to an
+        append-only ledger.</p>
+    </div>
+  </div>
+  <div class="col-md-6 col-xl-3">
+    <div class="kpi-card h-100">
+      <div class="feat-ic"><i class="bi bi-people-fill"></i></div>
+      <div class="feat-title">Live audit council</div>
+      <p class="feat-body">Five expert voices — Reconciler, Compliance Officer, Period
+        Analyst, Cost Advisor, Lead Auditor — reason over a deterministic audit engine.
+        The <em>numbers</em> are computed by rules; the model can't fabricate them.</p>
+    </div>
+  </div>
+  <div class="col-md-6 col-xl-3">
+    <div class="kpi-card h-100">
+      <div class="feat-ic"><i class="bi bi-cart3"></i></div>
+      <div class="feat-title">On-demand procurement</div>
+      <p class="feat-body">Intake → discover → enrich → evaluate (weighted scorecard) →
+        agent-vs-agent negotiation → guardrail → ledger. A full sourcing pipeline that
+        still terminates at the same spending boundary.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Technical -->
+<div class="panel">
+  <div class="panel-head">
+    <h2>Under the hood</h2>
+    <span class="panel-cap">honest about what's real vs. computed</span>
+  </div>
+  <div class="panel-body">
+    <dl class="row mb-0 tech-dl">
+      <dt class="col-sm-3">Reasoning</dt>
+      <dd class="col-sm-9">Nous Hermes / Nemotron-3 via an OpenAI-compatible gateway.
+        Degrades gracefully to a deterministic local reasoner if the model is
+        unreachable, so the dashboard always produces a real result.</dd>
+
+      <dt class="col-sm-3">Numbers</dt>
+      <dd class="col-sm-9">Every figure — spend, budgets, savings, reconciliation —
+        is computed by rules from an append-only ledger. The model reasons and
+        decides escalation; it never invents a number.</dd>
+
+      <dt class="col-sm-3">Stack</dt>
+      <dd class="col-sm-9"><span class="mono">Flask · Jinja2 · SQLAlchemy · SQLite ·
+        Bootstrap 5 · Chart.js · Gunicorn</span></dd>
+
+      <dt class="col-sm-3">Safety</dt>
+      <dd class="col-sm-9">HTTP basic auth over the UI, same-origin CSRF on
+        state-changing requests, escaped agent output (no markup injection), and an
+        agent identity firewall (it never leaks its model/platform). Health probe at
+        <span class="mono">/healthz</span>.</dd>
+
+      <dt class="col-sm-3">Honesty</dt>
+      <dd class="col-sm-9"><em>Realized</em> savings (waste actually cancelled, posted
+        to the ledger) are shown separately from <em>projected</em> savings (identified
+        but not yet actioned). We never blur the two.</dd>
+    </dl>
+  </div>
+</div>
+{% endblock %}

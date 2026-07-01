@@ -27,3 +27,7 @@ instance/server.log
 .idea/
 .vscode/
 *.swp
+
+# Runtime-injected data
+instance/injected_charges.json
+instance/*.json

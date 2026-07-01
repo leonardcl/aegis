@@ -1,8 +1,9 @@
 """Aegis CFO application factory."""
 import os
 import re
+import secrets
 
-from flask import Flask
+from flask import Flask, Response, request
 from markupsafe import Markup, escape
 
 from .config import Config
@@ -15,6 +16,19 @@ def create_app(config_class=Config):
 
     # Ensure the instance folder exists (for the SQLite file)
     os.makedirs(app.instance_path, exist_ok=True)
+
+    # --- Operational warnings (loud, so unsafe/dev states can't hide) -------- #
+    if app.config.get("GUARDRAILS_DISABLED"):
+        app.logger.warning(
+            "GUARDRAILS_DISABLED is set — spend gate returns ALLOW (dev_bypass) "
+            "and reply screening is off. DEVELOPMENT ONLY; unset for the demo.")
+    if app.config.get("SECRET_KEY_IS_EPHEMERAL"):
+        app.logger.warning(
+            "SECRET_KEY not set — using a random per-process key (sessions reset "
+            "on restart). Set SECRET_KEY in the environment for stable sessions.")
+
+    _install_basic_auth(app)
+    _install_csrf(app)
 
     db.init_app(app)
 
@@ -57,10 +71,83 @@ def create_app(config_class=Config):
 
     @app.context_processor
     def inject_globals():
-        return {"app_name": "Aegis CFO"}
+        return {
+            "app_name": "Aegis CFO",
+            "app_tagline": "The autonomous back-office that can't overspend.",
+        }
 
     # Create tables on first run
     with app.app_context():
         db.create_all()
 
     return app
+
+
+def _install_basic_auth(app):
+    """Optional shared-credential HTTP Basic Auth over the whole app.
+
+    Enabled only when AEGIS_BASIC_AUTH is set (Config.BASIC_AUTH), so it never
+    interferes with local dev or the test client. Format: "user:password" or
+    just "password" (any username accepted). Guards a publicly-exposed demo so
+    an anonymous visitor cannot approve/reject spend.
+    """
+    creds = app.config.get("BASIC_AUTH", "")
+    if not creds:
+        return
+    if ":" in creds:
+        want_user, want_pass = creds.split(":", 1)
+    else:
+        want_user, want_pass = "", creds
+
+    def _ok(auth):
+        if not auth:
+            return False
+        user_ok = secrets.compare_digest(auth.username or "", want_user) if want_user else True
+        pass_ok = secrets.compare_digest(auth.password or "", want_pass)
+        return user_ok and pass_ok
+
+    @app.before_request
+    def _require_basic_auth():
+        # The test client can't carry credentials; the suite asserts real route
+        # behaviour, not the gate. Skip under TESTING (mirrors the CSRF guard).
+        if app.testing:
+            return None
+        # Health checks and static assets stay open (monitors can't send creds).
+        if request.path == "/healthz" or request.path.startswith("/static/"):
+            return None
+        if _ok(request.authorization):
+            return None
+        return Response(
+            "Authentication required.", 401,
+            {"WWW-Authenticate": 'Basic realm="Aegis CFO"'},
+        )
+
+
+def _install_csrf(app):
+    """Same-origin CSRF protection on state-changing requests.
+
+    Blocks classic cross-site form POSTs by requiring the Origin/Referer (when the
+    browser sends one) to match the request host. Cheap and zero-template-churn.
+    The bearer-token ``/hermes`` API is exempt (Authorization header, not cookies,
+    so it isn't CSRF-able). Skipped under TESTING and when AEGIS_CSRF is disabled.
+    (Per-form token CSRF is the Phase-5 hardening; this stops the actual attack.)
+    """
+    from urllib.parse import urlparse
+
+    if os.environ.get("AEGIS_CSRF", "on").lower() in ("0", "off", "false", "no"):
+        return
+
+    safe_methods = {"GET", "HEAD", "OPTIONS", "TRACE"}
+
+    @app.before_request
+    def _csrf_same_origin():
+        if app.testing or request.method in safe_methods:
+            return None
+        if request.path.startswith("/hermes/"):
+            return None  # bearer-token API — not cookie-auth, not CSRF-able
+        source = request.headers.get("Origin") or request.headers.get("Referer")
+        if not source:
+            return None  # no cross-site indicator to act on
+        if urlparse(source).netloc and urlparse(source).netloc != request.host:
+            return Response("Cross-origin request blocked (CSRF).", 403)
+        return None

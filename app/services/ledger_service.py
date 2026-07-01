@@ -35,6 +35,33 @@ def today_spend(today):
     return float(total or 0.0)
 
 
+def total_savings():
+    """Realized savings recorded by the agent (ledger rows with outcome 'saved',
+    e.g. cancelled zero-usage subscriptions). Distinct from audit *projected* savings."""
+    total = (
+        db.session.query(func.coalesce(func.sum(LedgerEntry.amount), 0.0))
+        .filter(LedgerEntry.outcome == "saved")
+        .scalar()
+    )
+    return float(total or 0.0)
+
+
+def month_spend(today=None):
+    """Sum of posted outflows in the current calendar month (budget accumulator).
+
+    ``today`` should be a UTC date (ledger timestamps are utcnow()-based)."""
+    from datetime import datetime
+    today = today or datetime.utcnow().date()
+    start = today.replace(day=1)
+    total = (
+        db.session.query(func.coalesce(func.sum(LedgerEntry.amount), 0.0))
+        .filter(LedgerEntry.outcome == "posted")
+        .filter(func.date(LedgerEntry.timestamp) >= start.isoformat())
+        .scalar()
+    )
+    return float(total or 0.0)
+
+
 def add_entry(**kwargs):
     entry = LedgerEntry(**kwargs)
     db.session.add(entry)

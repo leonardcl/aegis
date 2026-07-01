@@ -6,27 +6,73 @@
 <div class="page-head d-flex justify-content-between align-items-start flex-wrap gap-2">
   <div>
     <h1>Audit &amp; Ledger</h1>
-    <p class="text-muted mb-0">Transaction traceability, reconciliation and compliance replay.</p>
+    <p class="text-muted mb-0">Reconciles the ledger against Stripe, replays every spend
+      against policy, and escalates exceptions — decided by a 5-agent Hermes council.</p>
   </div>
-  <form method="post" action="{{ url_for('audit.run') }}" class="d-flex align-items-center gap-2">
-    <select name="period_days" class="form-select form-select-sm" style="width:auto">
+  <form method="post" action="{{ url_for('audit.run') }}" class="d-flex align-items-center gap-2" id="run-council-form">
+    <select name="period_days" class="form-select form-select-sm" style="width:auto" {{ 'disabled' if running_job }}>
       <option value="7">Last 7 days</option>
       <option value="30" selected>Last 30 days</option>
       <option value="90">Last 90 days</option>
     </select>
-    <button type="submit" class="btn btn-primary btn-sm">
-      ⚖ Run Hermes Audit Council
+    <button type="submit" id="run-council-btn" class="btn btn-primary btn-sm" {{ 'disabled' if running_job }}>
+      {% if running_job %}
+        <span class="spinner-border spinner-border-sm" role="status"></span> Deliberating…
+      {% else %}⚖ Run Hermes Audit Council{% endif %}
     </button>
   </form>
 </div>
 
+<!-- Interactive: inject a live external event the audit will reconcile against -->
+<div class="panel mb-3">
+  <div class="panel-body d-flex flex-wrap align-items-center gap-2">
+    <span class="small text-muted me-2"><i class="bi bi-lightning-charge"></i>
+      Live data — inject an actual external Stripe charge (no ledger entry) and the
+      next audit catches it for real:</span>
+    <form method="post" action="{{ url_for('audit.inject_event') }}" class="d-flex align-items-center gap-2 m-0">
+      <input name="payee" class="form-control form-control-sm" style="width:11rem" placeholder="payee (e.g. shadow-saas.io)">
+      <input name="amount" class="form-control form-control-sm" style="width:7rem" placeholder="$ amount">
+      <button class="btn btn-sm btn-outline-warning"><i class="bi bi-plus-circle"></i> Inject rogue charge</button>
+    </form>
+    {% if injected_count %}
+    <span class="badge text-bg-warning"><i class="bi bi-exclamation-triangle"></i>
+      {{ injected_count }} live event(s) injected — run the council to catch them</span>
+    <form method="post" action="{{ url_for('audit.reset_events') }}" class="m-0">
+      <button class="btn btn-sm btn-outline-secondary">Reset</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
 {% if running_job %}
-<div id="council-status" class="alert alert-info d-flex align-items-center gap-2"
+<div id="council-status" class="panel mb-3" style="border:1px solid var(--bs-primary,#4f46e5);"
      data-job="{{ running_job }}" data-status-url="{{ url_for('audit.status', job_id=running_job) }}">
-  <div class="spinner-border spinner-border-sm" role="status"></div>
-  <span id="council-status-text">Hermes audit council is deliberating… (real Nemotron calls, ~1–2 min)</span>
+  <div class="panel-body">
+    <div class="d-flex align-items-center gap-3 mb-2">
+      <div class="spinner-border text-primary" role="status"></div>
+      <div>
+        <strong id="council-status-text">Hermes audit council is deliberating…</strong>
+        <div class="small text-muted">
+          Real Nemotron calls over your live ledger — typically ~40–90s.
+          This page updates automatically · elapsed <span id="council-elapsed">0</span>s
+        </div>
+      </div>
+    </div>
+    <div class="d-flex flex-wrap gap-1">
+      {% for p in ['1 · Reconciler','2 · Compliance Officer','3 · Period Analyst','4 · Cost Advisor','5 · Lead Auditor'] %}
+        <span class="badge text-bg-light border">
+          <span class="spinner-grow spinner-grow-sm text-primary" style="width:.45rem;height:.45rem;"></span>
+          {{ p }}
+        </span>
+      {% endfor %}
+    </div>
+  </div>
 </div>
 {% endif %}
+
+<!-- Report area: dimmed while a council run recomputes it, so stale numbers are obvious -->
+<div class="{{ 'audit-recomputing' if running_job }}">
+{% if running_job %}<div class="text-muted small mb-2"><i class="bi bi-arrow-repeat"></i> Re-computing — the figures below are from the previous run until the council finishes.</div>{% endif %}
 
 <!-- Audit summary -->
 <div class="row g-3 mb-4">
@@ -120,17 +166,26 @@
     </div>
 
     <div class="panel mt-3">
-      <div class="panel-head"><h2>Exceptions Detail</h2></div>
+      <div class="panel-head">
+        <h2>Exceptions Detail</h2>
+        <span class="panel-cap">click an item for the full explanation</span>
+      </div>
       <div class="panel-body p-0">
         <ul class="list-group list-group-flush">
           {% for exc in (report.exceptions if report else []) %}
-          <li class="list-group-item">
-            <div class="d-flex justify-content-between">
+          <li class="list-group-item exc-item" role="button" tabindex="0"
+              data-bs-toggle="modal" data-bs-target="#excModal"
+              data-type="{{ exc.exception_type }}"
+              data-amount="{{ exc.amount | money }}"
+              data-txn="{{ exc.transaction_id }}"
+              data-desc="{{ exc.description }}">
+            <div class="d-flex justify-content-between align-items-center">
               <span class="badge text-bg-danger">{{ exc.exception_type }}</span>
-              <span class="small text-muted">{{ exc.amount | money }}</span>
+              <span class="small text-muted">{{ exc.amount | money }}
+                <i class="bi bi-chevron-right ms-1"></i></span>
             </div>
             <div class="small mt-1">{{ exc.description }}</div>
-            {% if exc.transaction_id %}<div class="small text-muted">{{ exc.transaction_id }}</div>{% endif %}
+            {% if exc.transaction_id %}<div class="small text-muted mono">{{ exc.transaction_id }}</div>{% endif %}
           </li>
           {% else %}
           <li class="list-group-item text-center text-muted py-4">No exceptions.</li>
@@ -202,9 +257,105 @@
   </div>
 </div>
 {% endif %}
+</div><!-- /audit-recomputing -->
+
+<!-- Exception detail popup -->
+<div class="modal fade" id="excModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-exclamation-octagon-fill text-danger"></i>
+          <span id="exc-title">Exception</span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <span class="badge text-bg-danger" id="exc-type">—</span>
+          <span class="kpi-value mb-0" id="exc-amount" style="font-size:22px;">—</span>
+        </div>
+        <div class="eyebrow">Finding (from the live reconciliation)</div>
+        <p id="exc-desc" class="mb-3">—</p>
+        <div class="eyebrow">What this means</div>
+        <p id="exc-meaning" class="mb-3 text-muted">—</p>
+        <div class="eyebrow">What Aegis does about it</div>
+        <p id="exc-next" class="mb-2 text-muted">—</p>
+        <div class="small text-muted mono" id="exc-txn"></div>
+      </div>
+      <div class="modal-footer">
+        <span class="me-auto small text-muted"><i class="bi bi-shield-check"></i>
+          Escalated to the human queue — no money moves without sign-off.</span>
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
+<style>
+  .audit-recomputing { opacity:.5; filter:grayscale(.35); pointer-events:none; transition:opacity .2s; }
+  .exc-item { cursor:pointer; transition:background .12s; }
+  .exc-item:hover { background:#f7f8fc; }
+</style>
+<script>
+  // Plain-English explanation + next-action per reconciliation exception type.
+  (function () {
+    var EXPLAIN = {
+      stripe_only_charge: {
+        title: "Rogue charge — not in your ledger",
+        meaning: "Real money left the account through Stripe, but there is NO matching " +
+                 "entry in your books. That points to an unrecorded subscription, a " +
+                 "misconfigured integration, or a fraudulent/unauthorised charge.",
+        next:    "It's escalated for human investigation and the payee is flagged. You " +
+                 "can dispute the charge with Stripe, or record + justify it if it's real. " +
+                 "No new spend to that payee clears the guardrail until it's resolved."
+      },
+      amount_mismatch: {
+        title: "Amount mismatch — billed ≠ recorded",
+        meaning: "The amount Stripe actually billed differs from what your ledger recorded " +
+                 "for the same transaction. Someone was over- or under-charged by the delta.",
+        next:    "Escalated to verify the correct figure and reconcile the difference with " +
+                 "the vendor (refund or true-up). The ledger isn't trusted until they match."
+      },
+      ledger_only_entry: {
+        title: "Recorded, but no real charge",
+        meaning: "Your ledger shows a payment that Stripe has no charge for — the money may " +
+                 "not have actually moved, or it posted through a different channel.",
+        next:    "Escalated to confirm whether the payment executed before the books are closed."
+      },
+      policy_violation: {
+        title: "Policy breach on replay",
+        meaning: "Replaying this spend against the policy in force shows it broke a rule — a " +
+                 "cap, the payee allowlist, or a budget — that should have stopped it.",
+        next:    "Escalated as a compliance breach for review; the policy gap gets tightened."
+      },
+      missing_approval: {
+        title: "Spent without sign-off",
+        meaning: "A spend above the human-approval threshold posted without a sign-off in " +
+                 "the approval queue.",
+        next:    "Escalated to the approval queue for retroactive human review."
+      }
+    };
+    function pretty(t){ return (t||"").replace(/_/g," "); }
+    var modal = document.getElementById("excModal");
+    if (!modal) return;
+    modal.addEventListener("show.bs.modal", function (ev) {
+      var el = ev.relatedTarget; if (!el) return;
+      var type = el.getAttribute("data-type") || "";
+      var info = EXPLAIN[type] || { title: pretty(type) || "Exception",
+        meaning: "An item the reconciliation could not match cleanly.",
+        next: "Escalated to the human queue for review." };
+      document.getElementById("exc-title").textContent  = info.title;
+      document.getElementById("exc-type").textContent   = pretty(type);
+      document.getElementById("exc-amount").textContent = el.getAttribute("data-amount") || "";
+      document.getElementById("exc-desc").textContent   = el.getAttribute("data-desc") || "";
+      document.getElementById("exc-meaning").textContent= info.meaning;
+      document.getElementById("exc-next").textContent   = info.next;
+      var txn = el.getAttribute("data-txn") || "";
+      document.getElementById("exc-txn").textContent    = txn ? ("Transaction: " + txn) : "";
+    });
+  })();
+</script>
 <script>
   (function () {
     const el = document.getElementById("council-status");
@@ -226,6 +377,25 @@
         }
       } catch (e) { /* keep polling */ }
     }, 3000);
+  })();
+
+  // Count-up elapsed timer while the council deliberates.
+  (function () {
+    var el = document.getElementById("council-elapsed");
+    if (!el) return;
+    var s = 0;
+    setInterval(function () { s += 1; el.textContent = s; }, 1000);
+  })();
+
+  // Immediate feedback: disable the Run button the moment it's clicked.
+  (function () {
+    var form = document.getElementById("run-council-form");
+    var btn = document.getElementById("run-council-btn");
+    if (!form || !btn) return;
+    form.addEventListener("submit", function () {
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Starting…';
+    });
   })();
 </script>
 {% endblock %}

@@ -1,24 +1,57 @@
 """Dashboard command center blueprint."""
-from datetime import date
+from datetime import datetime
 
-from flask import Blueprint, render_template
+from flask import (Blueprint, current_app, flash, jsonify, redirect,
+                   render_template, request, url_for)
 
+from ..extensions import db
 from ..models import ApprovalRequest, AuditReport, ProcurementRequest
 from ..services import audit_service, ledger_service
 
 bp = Blueprint("dashboard", __name__)
 
 
+@bp.route("/healthz")
+def healthz():
+    """Liveness/readiness probe (no auth) — checks the DB and reports Hermes mode."""
+    from ..services import hermes_client
+    db_ok = True
+    try:
+        db.session.execute(db.text("SELECT 1"))
+    except Exception:
+        db_ok = False
+    # hermes_configured: a URL is set. hermes_live: the model server actually
+    # answered a TCP probe (real reachability, not just config).
+    return jsonify({"status": "ok" if db_ok else "degraded",
+                    "db": db_ok,
+                    "hermes_configured": hermes_client.is_live(),
+                    "hermes_live": hermes_client.ping()}), (
+        200 if db_ok else 503)
+
+
+@bp.route("/about")
+def about():
+    """Plain-language explainer: what Aegis is, the principle, the architecture."""
+    return render_template("about.html", active_page="about")
+
+
 @bp.route("/")
 def index():
-    today = date.today()
+    # UTC to match the utcnow()-based ledger timestamps (avoids a day-drift in
+    # "today's spend" across the UTC boundary).
+    today = datetime.utcnow().date()
 
     monthly_budget = 250_000.0
     spend = ledger_service.total_spend()
     monthly_used_pct = round(min(spend / monthly_budget * 100, 100), 1) if monthly_budget else 0
 
     report = audit_service.latest_report()
-    savings = report.total_savings if report else 0.0
+    # Be honest about what "savings" means: realized = waste the agent actually
+    # cancelled (posted to the ledger); projected = the audit's identified-but-not-
+    # yet-actioned opportunity. We surface both rather than blurring them.
+    realized_savings = ledger_service.total_savings()
+    projected_savings = report.total_savings if report else 0.0
+    savings = realized_savings + projected_savings
     audit_exceptions = len(report.exceptions) if report else 0
 
     pending_approvals = ApprovalRequest.query.filter_by(status="NEEDS_APPROVAL").count()
@@ -54,6 +87,8 @@ def index():
         "monthly_used_pct": monthly_used_pct,
         "today_spend": ledger_service.today_spend(today),
         "savings": savings,
+        "realized_savings": realized_savings,
+        "projected_savings": projected_savings,
         "pending_approvals": pending_approvals,
         "blocked_requests": blocked_requests,
         "audit_exceptions": audit_exceptions,
@@ -61,6 +96,7 @@ def index():
         "compliance_result": report.compliance_replay_result if report else "—",
     }
 
+    from ..services import operations
     return render_template(
         "dashboard.html",
         kpis=kpis,
@@ -69,8 +105,67 @@ def index():
         urgent=urgent,
         guardrail_summary=guardrail_summary,
         spend_chart=spend_chart,
+        ops=operations.status(),
         active_page="dashboard",
     )
+
+
+@bp.route("/run-daily-review", methods=["POST"])
+def run_daily_review():
+    """Trigger the autonomous daily review (the P0 hero loop) and report back."""
+    from ..services import autonomy
+    result = autonomy.run_daily_review()
+    if result["actions_taken"]:
+        detail = " ".join(r["reason"] for r in result["executed"])
+        flash(
+            f"Daily review complete — {result['actions_taken']} action(s) "
+            f"auto-executed within policy; ${result['savings_month']:,.0f}/mo saved. "
+            f"{detail}",
+            "success",
+        )
+    else:
+        flash("Daily review complete — no autonomous actions were needed.", "info")
+    if result["escalated"]:
+        flash(f"{len(result['escalated'])} item(s) exceeded the mandate and were "
+              f"routed to the approval queue.", "warning")
+    if result["blocked"]:
+        flash(f"{len(result['blocked'])} proposed action(s) were blocked by the "
+              f"guardrail.", "danger")
+    return redirect(url_for("dashboard.index"))
+
+
+@bp.route("/ops/start", methods=["POST"])
+def ops_start():
+    """Start the continuous autonomy loop — the CFO runs on its own from here."""
+    from ..services import operations
+    interval = request.form.get("interval", 60)
+    audit_every = request.form.get("audit_every", 0)
+    try:
+        interval, audit_every = int(interval or 60), int(audit_every or 0)
+    except (TypeError, ValueError):
+        interval, audit_every = 60, 0
+    started = operations.start(current_app._get_current_object(),
+                               interval=interval, audit_every=audit_every)
+    flash("Continuous autonomy started — the CFO is now running on its own; the "
+          "panel updates live." if started else
+          "Continuous autonomy is already running.",
+          "success" if started else "info")
+    return redirect(url_for("dashboard.index"))
+
+
+@bp.route("/ops/stop", methods=["POST"])
+def ops_stop():
+    from ..services import operations
+    operations.stop()
+    flash("Continuous autonomy stopped.", "info")
+    return redirect(url_for("dashboard.index"))
+
+
+@bp.route("/ops/status")
+def ops_status():
+    """Poll endpoint for the continuous-autonomy panel."""
+    from ..services import operations
+    return jsonify(operations.status())
 
 
 def _spend_trend():
@@ -78,7 +173,7 @@ def _spend_trend():
     from collections import OrderedDict
     from datetime import timedelta
 
-    today = date.today()
+    today = datetime.utcnow().date()
     buckets = OrderedDict()
     for i in range(6, -1, -1):
         d = today - timedelta(days=i)
