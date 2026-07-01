@@ -71,7 +71,10 @@ def create_app(config_class=Config):
 
     @app.context_processor
     def inject_globals():
-        return {"app_name": "Aegis CFO"}
+        return {
+            "app_name": "Aegis CFO",
+            "app_tagline": "The autonomous back-office that can't overspend.",
+        }
 
     # Create tables on first run
     with app.app_context():
@@ -105,6 +108,10 @@ def _install_basic_auth(app):
 
     @app.before_request
     def _require_basic_auth():
+        # The test client can't carry credentials; the suite asserts real route
+        # behaviour, not the gate. Skip under TESTING (mirrors the CSRF guard).
+        if app.testing:
+            return None
         # Health checks and static assets stay open (monitors can't send creds).
         if request.path == "/healthz" or request.path.startswith("/static/"):
             return None

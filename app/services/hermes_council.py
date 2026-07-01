@@ -169,8 +169,32 @@ _SENTINEL = {"reconciler": "RECONCILER", "compliance": "COMPLIANCE",
              "period": "PERIOD", "advisor": "ADVISOR", "lead": "LEAD"}
 _KEY_OF = {v: k for k, v in _SENTINEL.items()}
 
-_SECTION_RE = re.compile(r"@@\s*(RECONCILER|COMPLIANCE|PERIOD|ADVISOR|LEAD)\s*@@",
-                         re.IGNORECASE)
+# Match a sentinel like @@RECONCILER@@. The capture is deliberately broad (any
+# word) so a model wording variant — observed live: "RECONCILIATOR" for the
+# reconciler, also "ADVISORY"/"ADVISER" — is still captured and resolved to a
+# persona by prefix in _sentinel_key(), instead of silently dropping that voice
+# and degrading it to the terse deterministic template.
+_SECTION_RE = re.compile(r"@@\s*([A-Za-z]+)\s*@@")
+
+# Prefix -> persona key, checked in order. Each is the unambiguous stem of the
+# persona's name so near-misses (RECONCILIATOR, ADVISORY, COMPLIANT) still map.
+_SENTINEL_PREFIXES = (
+    ("reconcil", "reconciler"),
+    ("complian", "compliance"),
+    ("period", "period"),
+    ("advis", "advisor"),
+    ("lead", "lead"),
+)
+
+
+def _sentinel_key(token):
+    """Resolve a captured sentinel word to a persona key by prefix, tolerating
+    model variants. Returns None for an unrecognised sentinel."""
+    t = (token or "").strip().lower()
+    for prefix, key in _SENTINEL_PREFIXES:
+        if t.startswith(prefix):
+            return key
+    return None
 
 
 def _avail_results(audit):
@@ -270,9 +294,9 @@ def _parse_sections(text):
     out = {}
     # parts == [preamble, KEY, body, KEY, body, ...]
     for i in range(1, len(parts) - 1, 2):
-        key = _KEY_OF.get(parts[i].upper())
+        key = _sentinel_key(parts[i])
         body = (parts[i + 1] or "").strip()
-        if key and body:
+        if key and body and key not in out:
             out[key] = body
     return out
 

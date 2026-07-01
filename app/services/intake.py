@@ -19,6 +19,7 @@ Design (mirrors the audit flow's deterministic-spine + LLM-narration pattern):
 The deterministic route is the default so the web request never blocks on a
 ~30-40s model call (the Nemotron server is single-threaded).
 """
+import calendar
 import json
 import re
 from datetime import date, datetime, timedelta
@@ -92,6 +93,19 @@ def _extract_quantity(text):
     return m.group(0).strip() if m else ""
 
 
+def _add_months(d, n):
+    """Add ``n`` calendar months to ``d``, clamping the day to the target month.
+
+    Calendar-aware so a month is its real length (28-31 days), not a fixed 30.
+    E.g. Jan 31 + 1 month -> Feb 28 (or Feb 29 in a leap year).
+    """
+    month_index = d.month - 1 + n
+    year = d.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return d.replace(year=year, month=month, day=day)
+
+
 def _extract_deadline(text, today=None):
     """Return (date|None, raw_phrase). Handles 'in N days/weeks/months' and ASAP."""
     today = today or date.today()
@@ -99,7 +113,9 @@ def _extract_deadline(text, today=None):
                   r"(\d+)\s+(day|week|month)s?", text, re.IGNORECASE)
     if m:
         n, unit = int(m.group(1)), m.group(2).lower()
-        days = {"day": 1, "week": 7, "month": 30}[unit] * n
+        if unit == "month":
+            return _add_months(today, n), m.group(0)
+        days = {"day": 1, "week": 7}[unit] * n
         return today + timedelta(days=days), m.group(0)
     if re.search(r"\b(asap|urgent(?:ly)?|immediately|right\s*away)\b", text, re.IGNORECASE):
         return today + timedelta(days=7), "ASAP"

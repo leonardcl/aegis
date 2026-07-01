@@ -20,9 +20,19 @@ def healthz():
         db.session.execute(db.text("SELECT 1"))
     except Exception:
         db_ok = False
+    # hermes_configured: a URL is set. hermes_live: the model server actually
+    # answered a TCP probe (real reachability, not just config).
     return jsonify({"status": "ok" if db_ok else "degraded",
-                    "db": db_ok, "hermes_live": hermes_client.is_live()}), (
+                    "db": db_ok,
+                    "hermes_configured": hermes_client.is_live(),
+                    "hermes_live": hermes_client.ping()}), (
         200 if db_ok else 503)
+
+
+@bp.route("/about")
+def about():
+    """Plain-language explainer: what Aegis is, the principle, the architecture."""
+    return render_template("about.html", active_page="about")
 
 
 @bp.route("/")
@@ -36,8 +46,12 @@ def index():
     monthly_used_pct = round(min(spend / monthly_budget * 100, 100), 1) if monthly_budget else 0
 
     report = audit_service.latest_report()
-    # Realized savings (agent-cancelled waste) + audit projected savings.
-    savings = (report.total_savings if report else 0.0) + ledger_service.total_savings()
+    # Be honest about what "savings" means: realized = waste the agent actually
+    # cancelled (posted to the ledger); projected = the audit's identified-but-not-
+    # yet-actioned opportunity. We surface both rather than blurring them.
+    realized_savings = ledger_service.total_savings()
+    projected_savings = report.total_savings if report else 0.0
+    savings = realized_savings + projected_savings
     audit_exceptions = len(report.exceptions) if report else 0
 
     pending_approvals = ApprovalRequest.query.filter_by(status="NEEDS_APPROVAL").count()
@@ -73,6 +87,8 @@ def index():
         "monthly_used_pct": monthly_used_pct,
         "today_spend": ledger_service.today_spend(today),
         "savings": savings,
+        "realized_savings": realized_savings,
+        "projected_savings": projected_savings,
         "pending_approvals": pending_approvals,
         "blocked_requests": blocked_requests,
         "audit_exceptions": audit_exceptions,

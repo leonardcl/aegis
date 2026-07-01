@@ -55,6 +55,42 @@ def test_scrub_identity_removes_platform_terms_keeps_vendors():
     assert "AWS" in out and "OpenAI" in out
 
 
+def test_screen_reply_strips_raw_tool_call_leak():
+    """A raw tool/action JSON the model emits must never reach the user."""
+    leak = ('{\n  "action": "terminal",\n  "command": "curl -s https://x.test/ip",'
+            '\n  "timeout": 10\n}')
+    out = agent_guardrail.screen_reply("find me a cheaper vendor", leak)
+    # The internal tool schema is gone — no terminal/command/action JSON survives.
+    assert "terminal" not in out
+    assert "command" not in out
+    assert "curl" not in out
+
+    # Prose that happens to precede a tool blob keeps the prose, drops the blob.
+    mixed = ('Your monthly remaining is $219,800.\n'
+             '{"action": "terminal", "command": "ls", "timeout": 5}')
+    out2 = agent_guardrail.strip_tool_calls(mixed)
+    assert "219,800" in out2 and "terminal" not in out2
+
+    # Ordinary finance prose is untouched (no false positives).
+    clean = "I recommend approving the $8,600 AWS renewal; it's within the cap."
+    assert agent_guardrail.strip_tool_calls(clean) == clean
+
+
+def test_process_narration_detected_and_replaced(app):
+    """A reply that hunts for its own tools/files is replaced with a real answer."""
+    ramble = ("I need to check the current financial status. Let me first check what "
+              "financial tools are available to me and search for relevant files.")
+    assert agent_guardrail.looks_like_process_narration(ramble)
+    # A normal grounded answer is NOT flagged (no false positive).
+    good = ("You have $219,800 left of your $250,000 monthly budget; a switch to a "
+            "cheaper vendor would clear the per-transaction cap.")
+    assert not agent_guardrail.looks_like_process_narration(good)
+
+    # The keyword fallback for a "cheaper alternative" ask is on-topic + useful.
+    fb = hermes_service._keyword_reply("find a cheaper alternative to NimbusCloud")
+    assert "procurement" in fb.lower() and "guardrail" in fb.lower()
+
+
 # --------------------------------------------------------------------------- #
 # 0.4 — guardrail dev-toggle: ALLOW everything when disabled, deny otherwise
 # --------------------------------------------------------------------------- #
@@ -126,12 +162,23 @@ def test_csrf_same_origin_guard():
     os.environ["HERMES_API_URL"] = ""
     app = create_app()
     app.testing = False  # CSRF is intentionally skipped under TESTING
+    # Disabling TESTING also re-arms the optional Basic-Auth gate when a
+    # credential is configured (e.g. AEGIS_BASIC_AUTH set in .env). This test
+    # targets the CSRF logic, so authenticate past the gate if it's on.
+    import base64
+    headers = {}
+    creds = app.config.get("BASIC_AUTH", "")
+    if creds:
+        if ":" not in creds:
+            creds = ":" + creds
+        headers["Authorization"] = "Basic " + base64.b64encode(
+            creds.encode()).decode()
     with app.app_context():
         _db.create_all()
     c = app.test_client()
     ok = c.post("/agent/chat", json={"message": "hi"},
-                headers={"Origin": "http://localhost"}, base_url="http://localhost")
+                headers={"Origin": "http://localhost", **headers}, base_url="http://localhost")
     bad = c.post("/agent/chat", json={"message": "hi"},
-                 headers={"Origin": "http://evil.com"}, base_url="http://localhost")
+                 headers={"Origin": "http://evil.com", **headers}, base_url="http://localhost")
     assert ok.status_code == 200
     assert bad.status_code == 403

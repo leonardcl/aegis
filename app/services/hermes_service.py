@@ -67,9 +67,14 @@ def ask_hermes_agent(message, context=None):
 
         system = (agent_guardrail.SYSTEM_PROMPT
                   + (f"\nThe user is on the '{page}' page." if page else "")
-                  + "\nYou have LIVE tools over the real books; their results are "
-                    "below. Quote the real figures exactly; never invent numbers. "
-                    "Be concise and specific.")
+                  + "\nThe LIVE TOOL RESULTS below are ALREADY fetched for you over "
+                    "the real books. Answer the user's question directly from them. "
+                    "Quote the real figures exactly; never invent numbers. Lead with "
+                    "the answer in the first sentence. Do NOT narrate your process, "
+                    "do NOT say you will check/search/look up anything, and do NOT "
+                    "mention tools, files, or data sources — you already have the data. "
+                    "If something needed isn't in the results, give your best one-line "
+                    "recommendation and route it to the guardrail. Be concise.")
         user = (("LIVE TOOL RESULTS (authoritative):\n" + "\n\n".join(blocks) + "\n\n"
                  if blocks else "") + f"User: {message or ''}")
 
@@ -78,8 +83,14 @@ def ask_hermes_agent(message, context=None):
             [{"role": "system", "content": system},
              {"role": "user", "content": user}],
             timeout=chat_timeout, label="chat")
-        reply = out.get("content") or _keyword_reply(message)
+        reply = out.get("content") or ""
         reply = agent_guardrail.screen_reply(message, reply)
+        # If screening removed a raw tool-call leak, the model returned nothing
+        # usable, or it rambled about its own process/tools instead of answering,
+        # fall back to a grounded deterministic reply so the user always gets a
+        # real, on-topic answer rather than a blank or a meta-narration.
+        if not reply.strip() or agent_guardrail.looks_like_process_narration(reply):
+            reply = agent_guardrail.screen_reply(message, _keyword_reply(message))
         return {"reply": reply, "engine": out.get("engine", "hermes"),
                 "tools_used": used}
 
@@ -182,6 +193,14 @@ def _keyword_reply(message):
                 "because they exceed the auto-approve ceiling. I recommend "
                 "approving the highest-scorecard vendor and rejecting the "
                 "duplicate request.")
+    if any(k in text for k in ("cheaper", "alternative", "switch", "source",
+                               "negotiate", "find a", "replace")):
+        return ("I can source that. Open Procurement and I'll discover candidate "
+                "vendors, score them on price and lead time, run a live negotiation, "
+                "then route the winner through the guardrail — anything above the "
+                "auto-approve limit goes to a human first. For a flagged vendor you "
+                "can also hit ⇄ Negotiate on the Audit page. Tell me the item, your "
+                "budget, and any must-haves and I'll start.")
     if any(k in text for k in ("vendor", "recommend", "scorecard")):
         return ("Based on your priority weights, the top vendor balances price "
                 "and lead time best. I recommend sending it to the guardrail.")

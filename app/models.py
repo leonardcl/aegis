@@ -394,3 +394,49 @@ class AgentMessage(db.Model):
 
     def __repr__(self):
         return f"<AgentMessage {self.id} {self.role}>"
+
+
+# --------------------------------------------------------------------------- #
+# Background jobs (persistent, cross-worker registry)
+# --------------------------------------------------------------------------- #
+class Job(db.Model):
+    """Persistent registry for long-running background jobs (audit / negotiation /
+    autopilot).
+
+    Replaces the old in-process ``dict`` so job state survives a restart and is
+    visible to every gunicorn worker (not just the one that started the run).
+    The full job state lives in ``data_json`` (a JSON string — SQLite has no
+    native JSON type); ``job_id``/``kind``/``status``/``ref`` are mirrored into
+    columns for indexed lookups and de-duplication. Use the ``data`` property to
+    read/write the state dict.
+    """
+    __tablename__ = "job"
+
+    id = db.Column(db.Integer, primary_key=True)
+    # Public, opaque job handle returned to callers (uuid hex, 12 chars).
+    job_id = db.Column(db.String(32), unique=True, nullable=False, index=True)
+    kind = db.Column(db.String(40), default="")          # audit / negotiation / autopilot
+    status = db.Column(db.String(20), default="running")  # running / done / error
+    # Optional caller reference for de-dup (e.g. autopilot's procurement req_id).
+    ref = db.Column(db.String(80), default="", index=True)
+    data_json = db.Column(db.Text, default="")            # full job state dict as JSON
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    @property
+    def data(self):
+        """Parsed job state (dict), or ``{}`` if none/invalid."""
+        if not self.data_json:
+            return {}
+        try:
+            return json.loads(self.data_json)
+        except (ValueError, TypeError):
+            return {}
+
+    @data.setter
+    def data(self, value):
+        self.data_json = json.dumps(value) if value else ""
+
+    def __repr__(self):
+        return f"<Job {self.job_id} {self.kind} {self.status}>"

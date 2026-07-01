@@ -76,7 +76,10 @@
     <div class="kpi-card">
       <div class="kpi-label">Savings This Month</div>
       <div class="kpi-value text-success">{{ kpis.savings | money }}</div>
-      <div class="kpi-foot"><i class="bi bi-piggy-bank"></i> Identified by Hermes</div>
+      <div class="kpi-split">
+        <span class="ks">Realized<b class="text-success">{{ kpis.realized_savings | money }}</b></span>
+        <span class="ks">Projected<b>{{ kpis.projected_savings | money }}</b></span>
+      </div>
     </div>
   </div>
   <div class="col-6 col-xl">

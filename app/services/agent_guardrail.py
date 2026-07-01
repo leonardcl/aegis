@@ -88,6 +88,57 @@ def scrub_identity(reply):
     text = _INFRA_LEAK.sub("the Aegis platform", text)
     return text
 
+
+# A raw tool/function call the model sometimes emits as text instead of prose,
+# e.g. {"action": "terminal", "command": "curl ...", "timeout": 10}. This exposes
+# the agent's internal tool schema (and that it can run shell commands) and must
+# never reach a user-facing CFO reply.
+_TOOL_KEY = re.compile(r'"action"\s*:', re.IGNORECASE)
+_TOOL_KEY2 = re.compile(
+    r'"(?:command|timeout|tool|tool_call|tool_calls|arguments|function|parameters)"\s*:',
+    re.IGNORECASE)
+
+
+# The model occasionally answers a hard question by narrating its *process* —
+# "let me check what tools are available", "I'll search for relevant files",
+# "I need to check the data first" — instead of just answering. For a CFO product
+# this is both useless and a soft infra leak (it implies tools/files/an agent
+# harness). Detect it so the caller can replace it with a grounded answer.
+_PROCESS_LEAK = re.compile(
+    r"(what\s+tools?\s+(?:are|might be|i have)|tools?\s+available\s+to\s+me|"
+    r"available\s+to\s+me\s+through|search\s+for\s+(?:relevant\s+)?files|"
+    r"check\s+what\s+(?:financial\s+)?(?:tools?|data|files)|"
+    r"(?:let me|i'?ll|i\s+will|i\s+need\s+to|let me first)\s+(?:first\s+)?"
+    r"(?:check|look|search|find|see|start by|gather)\b|"
+    r"any\s+(?:financial|ledger)[\s-]*related\s+tools?|"
+    r"i\s+don'?t\s+(?:have|see)\s+(?:access|any tools))",
+    re.IGNORECASE)
+
+
+def looks_like_process_narration(reply):
+    """True if the reply narrates the agent's own tool/file/process hunting
+    rather than answering — a known low-quality failure mode to replace."""
+    return bool(_PROCESS_LEAK.search(reply or ""))
+
+
+def strip_tool_calls(reply):
+    """Remove raw tool/action JSON the model occasionally emits instead of prose.
+
+    Triggers only when the text carries the tell-tale ``"action":`` key alongside
+    another tool key (``"command"``, ``"timeout"``, …) — a shape legitimate CFO
+    prose never has — then excises the JSON region (tolerating the unbalanced
+    braces the model sometimes produces). Returns ``""`` if nothing else remains,
+    so the caller can fall back to a real answer.
+    """
+    text = reply or ""
+    if _TOOL_KEY.search(text) and _TOOL_KEY2.search(text):
+        text = re.sub(r"\{.*\}", " ", text, flags=re.DOTALL)   # balanced region
+        text = re.sub(r"\{.*", " ", text, flags=re.DOTALL)     # trailing unbalanced
+        text = re.sub(r"```[a-zA-Z]*", " ", text)              # leftover fences
+        text = re.sub(r"[ \t]{2,}", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
+
 # --------------------------------------------------------------------------- #
 # Intent classification on the agent's own reply (defense in depth)
 # --------------------------------------------------------------------------- #
@@ -134,6 +185,7 @@ def screen_reply(user_message, reply):
     # above only in enforce mode; identity hygiene is a product concern, not a
     # spend guardrail). This stays on so the agent never breaks character.
     reply = scrub_identity(reply)
+    reply = strip_tool_calls(reply)
 
     note = ""
     if _EXECUTED_SPEND.search(reply or ""):

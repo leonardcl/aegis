@@ -26,6 +26,21 @@
     return el;
   }
 
+  // Small technical caption under an assistant reply: which engine answered
+  // (real Hermes vs the deterministic local reasoner) and how long it took.
+  function addMeta(engine, ms) {
+    const el = document.createElement("div");
+    el.className = "hermes-meta";
+    const live = engine === "hermes" || engine === "live";
+    const dot = document.createElement("span");
+    dot.className = "live-dot " + (live ? "up" : "warn");
+    el.appendChild(dot);
+    const label = live ? "real Hermes" : (engine || "local");
+    el.appendChild(document.createTextNode(label + (ms ? " · " + (ms / 1000).toFixed(1) + "s" : "")));
+    messages.appendChild(el);
+    messages.scrollTop = messages.scrollHeight;
+  }
+
   const sendBtn = form.querySelector('button[type="submit"]');
   let inFlight = false;
 
@@ -46,7 +61,11 @@
     input.value = "";
     setBusy(true);
 
-    const typing = addMessage("Hermes is thinking…", "assistant typing");
+    const typing = addMessage("Hermes is thinking", "assistant typing");
+    const dots = document.createElement("span");
+    dots.className = "dots";
+    typing.appendChild(dots);
+    const t0 = (window.performance && performance.now) ? performance.now() : Date.now();
 
     // Abort the request if it outruns the server-side chat timeout, so the
     // panel never hangs when the model is busy with a council call.
@@ -63,6 +82,8 @@
       const data = await res.json();
       typing.remove();
       addMessage(data.reply || "No response.", "assistant");
+      const elapsed = ((window.performance && performance.now) ? performance.now() : Date.now()) - t0;
+      addMeta(data.engine, Math.round(elapsed));
     } catch (err) {
       typing.remove();
       addMessage(
